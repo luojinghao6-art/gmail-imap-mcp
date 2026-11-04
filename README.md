@@ -1,5 +1,8 @@
 # gmail-imap-mcp
 
+[![CI](https://github.com/luojinghao6-art/gmail-imap-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/luojinghao6-art/gmail-imap-mcp/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/luojinghao6-art/gmail-imap-mcp)](https://github.com/luojinghao6-art/gmail-imap-mcp/releases)
+[![Python](https://img.shields.io/badge/python-3.9%2B-blue)](https://www.python.org/)
 **Gmail for AI agents — App Password only. No OAuth, no Google Cloud project, no relay.**
 
 English · [简体中文](README.zh-CN.md)
