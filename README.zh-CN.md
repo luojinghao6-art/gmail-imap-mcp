@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/luojinghao6-art/gmail-imap-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/luojinghao6-art/gmail-imap-mcp/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/luojinghao6-art/gmail-imap-mcp)](https://github.com/luojinghao6-art/gmail-imap-mcp/releases)
-[![Python](https://img.shields.io/badge/python-3.9%2B-blue)](https://www.python.org/)
+[![Python](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/)
 
 **给 AI 用的 Gmail —— 只走应用专用密码。不用 OAuth，不建 GCP 项目，不经过第三方中转。**
 
@@ -66,6 +66,9 @@ IMAP/SMTP 的标准认证方式。
   `is:unread in:anywhere` —— 不是 IMAP `SEARCH` 那个残缺子集
 - **批量取邮件头** —— 一页一次往返，而不是每封两次（真实账号上 30 封：旧写法约 25 秒，
   现在约 4 秒；剩下的时间主要是 TLS 登录和一次搜索往返）
+- **消息引用不会串邮箱** —— 每条搜索结果都带 `mailbox` 和账号级的 `msgid`
+  （`X-GM-MSGID`）。UID 只在**单个邮箱内**唯一，所以读信 / 回复 / 下载附件都要求
+  带上邮箱，或者直接用 `msgid`
 - **附件下载**并存盘
 - **中文文件夹名自动解码**（IMAP modified UTF-7）：
   `[Gmail]/&XfJSIJZkkK5O9g-` → `[Gmail]/已删除邮件`
@@ -87,7 +90,7 @@ pip install "gmail-imap-mcp @ https://github.com/luojinghao6-art/gmail-imap-mcp/
 
 等发到 PyPI 之后，短写法也能用：`pip install "gmail-imap-mcp[mcp]"`。
 
-需要 Python 3.9+。
+需要 Python 3.10+——依赖的 MCP SDK 不支持 3.9。
 
 ## 配置
 
@@ -169,25 +172,31 @@ gmail-imap-ui --port 9000 --no-browser
 | 工具 | 作用 |
 |---|---|
 | `gmail_status` | 配好了没？IMAP 登得上吗？ |
-| `gmail_search(query, limit, mailbox)` | Gmail 语法搜索，返回头信息和 uid |
-| `gmail_read(uid, save_attachments_to?)` | 整封邮件：纯文本、HTML、附件列表 |
-| `gmail_send(to, subject, body, cc?, bcc?, html?, attachments?, reply_to_uid?)` | 发信 |
-| `gmail_reply(uid, body, reply_all?)` | 回复，带原文引用、保持会话 |
+| `gmail_search(query, limit, mailbox)` | Gmail 语法搜索，返回头信息、uid、msgid、mailbox |
+| `gmail_read(uid?, mailbox?, msgid?, save_attachments_to?)` | 整封邮件：纯文本、HTML、附件列表 |
+| `gmail_send(to, subject, body, cc?, bcc?, html?, attachments?, reply_to_uid?, reply_mailbox?, reply_msgid?)` | 发信 |
+| `gmail_reply(uid?, body, reply_all?, mailbox?, msgid?)` | 回复，带原文引用、保持会话 |
 | `gmail_labels()` | 文件夹和标签，已解码 |
-| `gmail_download_attachment(uid, index, save_to)` | 把一个附件存到磁盘 |
+| `gmail_download_attachment(uid?, index, save_to, mailbox?, msgid?)` | 把一个附件存到磁盘 |
+
+`gmail_search` 返回的 `mailbox` 要和 `uid` 一起传回去。UID 是邮箱内唯一的，
+不带邮箱去「所有邮件」里查，可能读到另一封同号邮件。`msgid` 是账号级稳定的，
+用它就没这个问题。
 
 ## CLI
 
 ```bash
 gmail-imap status
 gmail-imap search --query "from:boss newer_than:7d" --limit 10
-gmail-imap read --uid 12345 --save-attachments ./附件
+gmail-imap read --uid 12345 --mailbox "INBOX" --save-attachments ./附件
+gmail-imap read --msgid 1278455344230334865
 gmail-imap send --to a@b.com --subject "标题" --body "正文"
-gmail-imap send --to a@b.com --subject "周报" --body "见附件" --attach 周报.pdf
+gmail-imap send --to a@b.com --subject "周报" --body "见附件" --attach 周报.pdf --dry-run
 gmail-imap labels
 ```
 
-`search` / `read` / `labels` 加 `--json` 拿机读输出。
+`search` / `read` / `labels` 加 `--json` 拿机读输出。`--dry-run` 只组装邮件并打印
+收件人，不会连 SMTP。
 
 ## 安全须知
 
@@ -197,7 +206,20 @@ gmail-imap labels
   单独开个 Google 账号专门给它用。
 - **邮件是不可信输入。** 一封邮件里可以写着专门骗你 AI 的指令。`server.py` 里让模型
   把邮件内容当数据看，但提示注入不是一句话能解决的——让 agent 替你发信之前自己看一眼。
-- **Web UI 只监听本机**，且有 token 校验。别往公网转发。
+- **Web UI 只监听本机**，有 token 校验，还拒绝非本机 `Host`（防 DNS rebinding）、
+  写操作校验 `Origin`/`Referer`、要求 `Content-Type: application/json`，并下发
+  CSP、`X-Frame-Options: DENY`、`nosniff`、`no-referrer`。别往公网转发。
+
+### 代码层面的发信约束
+
+提示词只是建议，下面这些在 `gmail_imap_mcp.core` 里强制执行，MCP、CLI、Web UI 共用：
+
+| 开关 | 作用 |
+|---|---|
+| `GMAIL_MCP_READ_ONLY=1` | `send` / `reply` 在连 SMTP 之前直接拒绝；读操作不受影响 |
+| `GMAIL_MCP_ATTACHMENT_DIRS=/路径/a:/路径/b` | 附件必须落在这些目录里（用 `os.pathsep` 分隔） |
+| 始终生效 | 凭据类文件（`.credentials.json`、`.env*`、`*.pem`、`*.key`、`id_rsa`）、凭据文件本身、审计日志，以及 `.ssh` 下的文件，一律拒绝发送 |
+| 始终生效 | 每次发信、回复、被拦截的尝试都写一行 JSON 到凭据旁边的 `audit.log` |
 
 ## 排障
 
@@ -212,7 +234,9 @@ gmail-imap labels
 ## 现状
 
 已在真实个人 Gmail 账号上跑通：搜索、阅读、附件、发信、回复、Web UI。
-还没做：草稿编辑、过滤器、Gmail 设置（IMAP 干不了这些），以及针对真实邮箱的自动化测试。
+离线测试覆盖 IMAP FETCH/SEARCH 响应、邮件构造与会话头、附件存盘、UID/邮箱解析、
+发信策略与审计日志、Web 的 token/Host/Origin/CSP，以及 MCP 工具 schema。
+还没做：草稿编辑、过滤器、Gmail 设置（IMAP 干不了这些），以及针对真实邮箱的测试。
 
 欢迎提 issue 和 PR。大改动请先开 issue 聊。
 

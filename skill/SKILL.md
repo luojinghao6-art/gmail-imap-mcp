@@ -36,8 +36,10 @@ gmail-imap search --query "from:boss newer_than:7d" --limit 10 --json
 gmail-imap search --query "has:attachment filename:pdf" --json
 
 # read one message (bodies, attachments)
-gmail-imap read --uid 12345 --json
-gmail-imap read --uid 12345 --save-attachments ./attachments --json
+# UIDs are per-mailbox: pass the mailbox printed by search, or use --msgid.
+gmail-imap read --uid 12345 --mailbox "INBOX" --json
+gmail-imap read --msgid 1278455344230334865 --json
+gmail-imap read --uid 12345 --mailbox "[Gmail]/All Mail" --save-attachments ./attachments --json
 
 # send
 gmail-imap send --to a@b.com --subject "Subject" --body "Body"
@@ -45,7 +47,11 @@ gmail-imap send --to a@b.com --subject "Report" --body "See attached" --attach r
 gmail-imap send --to a@b.com --subject "Notice" --html --body "<b>Hello</b>"
 
 # reply (keeps In-Reply-To / References, so the thread does not split)
-gmail-imap send --to sender@x.com --subject "Re: ..." --body "..." --reply-to-uid 12345
+gmail-imap send --to sender@x.com --subject "Re: ..." --body "..." \
+  --reply-to-uid 12345 --reply-mailbox "INBOX"
+
+# preview without sending (builds the message, never opens SMTP)
+gmail-imap send --to a@b.com --subject "Hi" --body "Hello" --dry-run
 
 # folders and labels (names already decoded from IMAP UTF-7)
 gmail-imap labels --json

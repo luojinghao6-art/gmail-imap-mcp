@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+from datetime import datetime, timezone
 import html as html_mod
 import imaplib
 import json
@@ -39,6 +40,9 @@ __all__ = [
     "decode_mime",
     "imap_utf7_decode",
     "html_to_text",
+    "is_read_only",
+    "audit_log_path",
+    "resolve_attachment",
 ]
 
 APP_NAME = "gmail-imap-mcp"
@@ -48,8 +52,13 @@ SMTP_HOST = "smtp.gmail.com"
 SMTP_SSL_PORT = 465
 DEFAULT_TIMEOUT = 45
 
+# Write-path policy. Environment flags keep one core safe for both a personal
+# CLI and a shared deployment without forking behaviour.
+READ_ONLY_ENV = "GMAIL_MCP_READ_ONLY"
+ATTACHMENT_DIRS_ENV = "GMAIL_MCP_ATTACHMENT_DIRS"
+
 HEADER_SPEC = (
-    "(UID RFC822.SIZE FLAGS X-GM-LABELS "
+    "(UID RFC822.SIZE FLAGS X-GM-MSGID X-GM-LABELS "
     "BODY.PEEK[HEADER.FIELDS (FROM TO CC SUBJECT DATE MESSAGE-ID REFERENCES)])"
 )
 
@@ -154,6 +163,99 @@ def has_credentials() -> bool:
         return load_settings(required=False) is not None
     except GmailError:
         return False
+
+
+# ---------------------------------------------------------------- policy
+# A prompt that says "confirm before sending" is not a control; these are.
+
+_TRUE_VALUES = {"1", "true", "yes", "on"}
+
+
+def is_read_only() -> bool:
+    """True when GMAIL_MCP_READ_ONLY is set to a truthy value."""
+    return os.environ.get(READ_ONLY_ENV, "").strip().lower() in _TRUE_VALUES
+
+
+def audit_log_path() -> Path:
+    """JSONL log of every outbound write, next to the credentials."""
+    return _config_home() / "audit.log"
+
+
+def _audit(event: str, **fields: Any) -> None:
+    """Append one JSON line to the audit log. Auditing never breaks mail."""
+    row: dict[str, Any] = {
+        "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "event": event,
+    }
+    row.update(fields)
+    try:
+        path = audit_log_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(row, ensure_ascii=False, default=str) + "\n")
+    except OSError:
+        pass
+
+
+def _ensure_writable(action: str) -> None:
+    if is_read_only():
+        _audit("blocked", action=action, reason=READ_ONLY_ENV)
+        raise GmailError(
+            f"{action} is disabled because {READ_ONLY_ENV} is set. "
+            "Unset it to allow outbound mail."
+        )
+
+
+_SECRET_FILENAMES = {
+    ".credentials.json", "credentials.json", ".env", ".netrc", ".npmrc",
+    ".pypirc", "id_rsa", "id_dsa", "id_ecdsa", "id_ed25519",
+}
+_SECRET_SUFFIXES = {".pem", ".key", ".p12", ".pfx", ".kdbx", ".keystore", ".jks"}
+
+
+def _looks_secret(path: Path) -> bool:
+    name = path.name.lower()
+    if name in _SECRET_FILENAMES or name.startswith(".env."):
+        return True
+    if path.suffix.lower() in _SECRET_SUFFIXES:
+        return True
+    if ".ssh" in path.parts:
+        return True
+    try:
+        resolved = path.resolve()
+        if resolved in {config_file().resolve(), audit_log_path().resolve()}:
+            return True  # the agent's own credentials or audit trail
+    except OSError:
+        pass
+    return False
+
+
+def resolve_attachment(raw: str) -> Path:
+    """Validate an outbound attachment path.
+
+    The file must exist; if GMAIL_MCP_ATTACHMENT_DIRS is set it must live under
+    one of those roots; credential-looking files are always refused so a
+    poisoned context cannot exfiltrate the App Password.
+    """
+    path = Path(raw).expanduser()
+    if not path.is_file():
+        raise GmailError(f"Attachment not found: {path}")
+    resolved = path.resolve()
+    roots = [p for p in os.environ.get(ATTACHMENT_DIRS_ENV, "").split(os.pathsep) if p]
+    if roots:
+        for root in roots:
+            try:
+                resolved.relative_to(Path(root).expanduser().resolve())
+                break
+            except ValueError:
+                continue
+        else:
+            raise GmailError(
+                f"Attachment is outside {ATTACHMENT_DIRS_ENV}: {resolved}"
+            )
+    if _looks_secret(resolved):
+        raise GmailError(f"Refusing to send a credential or secret file: {resolved}")
+    return resolved
 
 
 # ---------------------------------------------------------------- decoding
@@ -264,6 +366,12 @@ def _extract_labels(meta: bytes) -> list[str]:
     ]
 
 
+def _parse_msgid(meta: bytes) -> str | None:
+    """X-GM-MSGID is stable across mailboxes; UIDs are not."""
+    match = re.search(b"X-GM-MSGID ([0-9]+)", meta)
+    return match.group(1).decode() if match else None
+
+
 def _parse_header_item(meta: bytes, raw_headers: bytes) -> dict[str, Any]:
     uid = None
     match = re.search(rb"\bUID (\d+)", meta)
@@ -283,6 +391,7 @@ def _parse_header_item(meta: bytes, raw_headers: bytes) -> dict[str, Any]:
     msg = BytesParser(policy=policy.default).parsebytes(raw_headers)
     return {
         "uid": uid,
+        "msgid": _parse_msgid(meta),
         "size": size,
         "unread": "\\Seen" not in flags,
         "flags": flags,
@@ -310,6 +419,7 @@ class MailClient:
         self.settings = settings or load_settings()
         self._imap: imaplib.IMAP4_SSL | None = None
         self._all_mail: str | None = None
+        self._mailbox_names: dict[str, str] | None = None
         self._lock = threading.RLock()
 
     # -- plumbing -------------------------------------------------
@@ -376,6 +486,7 @@ class MailClient:
         if self._imap is None:
             self._imap = self._connect_imap()
             self._all_mail = None
+            self._mailbox_names = None
         return self._imap
 
     def close(self) -> None:
@@ -387,6 +498,7 @@ class MailClient:
                 pass
             self._imap = None
             self._all_mail = None
+            self._mailbox_names = None
 
     def _run(self, fn):
         """Run an IMAP operation, reconnecting once if the connection died."""
@@ -429,18 +541,84 @@ class MailClient:
             return name
         return "INBOX"
 
+    def _quote_mailbox(self, name: str) -> str:
+        return '"' + name.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+    def _mailbox_map(self, imap: imaplib.IMAP4_SSL) -> dict[str, str]:
+        """Map decoded and raw mailbox names to the raw IMAP name."""
+        if self._mailbox_names is None:
+            mapping: dict[str, str] = {}
+            try:
+                status, data = imap.list('""', "*")
+            except Exception:
+                status, data = "NO", []
+            if status == "OK":
+                for line in data or []:
+                    if not isinstance(line, bytes):
+                        continue
+                    text = line.decode("utf-8", errors="replace")
+                    match = re.search(r'\(([^)]*)\)\s+"[^"]*"\s+(.+)$', text)
+                    if not match or "\\Noselect" in match.group(1):
+                        continue
+                    raw = match.group(2).strip()
+                    if raw.startswith('"') and raw.endswith('"'):
+                        raw = raw[1:-1].replace('\\"', '"').replace("\\\\", "\\")
+                    mapping.setdefault(imap_utf7_decode(raw), raw)
+                    mapping.setdefault(raw, raw)
+                self._mailbox_names = mapping
+            return mapping
+        return self._mailbox_names
+
     def _select(self, imap: imaplib.IMAP4_SSL, mailbox: str | None) -> str:
+        """Select a mailbox and return its raw IMAP name.
+
+        An explicit mailbox that cannot be opened raises. Silently falling back
+        to INBOX would change the meaning of every UID the caller already holds.
+        """
         if mailbox:
-            box = mailbox
-        else:
-            if self._all_mail is None:
-                self._all_mail = self._find_all_mail(imap)
-            box = self._all_mail
-        status, _ = imap.select(f'"{box}"', readonly=True)
+            raw = self._mailbox_map(imap).get(mailbox, mailbox)
+            try:
+                status, data = imap.select(self._quote_mailbox(raw), readonly=True)
+            except imaplib.IMAP4.error as exc:
+                raise GmailError(f"Cannot open mailbox {mailbox!r}: {exc}") from exc
+            if status != "OK":
+                raise GmailError(f"Cannot open mailbox {mailbox!r}: {data}")
+            return raw
+
+        if self._all_mail is None:
+            self._all_mail = self._find_all_mail(imap)
+        box = self._all_mail
+        try:
+            status, _ = imap.select(self._quote_mailbox(box), readonly=True)
+        except imaplib.IMAP4.error:
+            status = "NO"
         if status != "OK":
             box = "INBOX"
-            imap.select('"INBOX"', readonly=True)
+            imap.select(self._quote_mailbox("INBOX"), readonly=True)
         return box
+
+    def _resolve_ref(self, imap: imaplib.IMAP4_SSL, uid: str | None = None,
+                     mailbox: str | None = None,
+                     msgid: str | None = None) -> tuple[str, str]:
+        """Return (raw mailbox, uid) for a message reference.
+
+        X-GM-MSGID is account-wide, so it is always safe. A bare UID is only
+        meaningful inside one mailbox; without one we use All Mail, which is
+        the mailbox every search hit comes from unless the caller narrowed it.
+        """
+        if msgid:
+            box = self._select(imap, None)
+            status, data = imap.uid("SEARCH", "X-GM-MSGID", str(msgid).strip())
+            if status != "OK":
+                raise GmailError(f"Cannot look up message id {msgid}: {data}")
+            found = (data[0] or b"").split()
+            if not found:
+                raise GmailError(f"No message with X-GM-MSGID {msgid}")
+            return box, found[-1].decode()
+        real = str(uid or "").strip()
+        if not real:
+            raise GmailError("uid (or msgid) is required")
+        return self._select(imap, mailbox), real
 
     def labels(self) -> list[dict[str, str]]:
         def run(imap: imaplib.IMAP4_SSL):
@@ -481,7 +659,11 @@ class MailClient:
             uids = (data[0] or b"").split()
             picked = [u.decode() for u in uids[-limit:]][::-1]  # newest first
             rows = self._fetch_headers(imap, picked)
-            return {"mailbox": imap_utf7_decode(box), "query": query,
+            box_name = imap_utf7_decode(box)
+            for row in rows:
+                row["mailbox"] = box_name
+                row["mailbox_raw"] = box
+            return {"mailbox": box_name, "mailbox_raw": box, "query": query,
                     "count": len(rows), "messages": rows}
 
         return self._run(run)
@@ -502,22 +684,31 @@ class MailClient:
         rows.sort(key=lambda r: order.get(str(r.get("uid")), 10 ** 9))
         return rows
 
-    def read(self, uid: str, mailbox: str | None = None,
-             save_attachments: str | None = None) -> dict[str, Any]:
-        uid = str(uid).strip()
-        if not uid:
-            raise GmailError("uid is required")
+    def read(self, uid: str | None = None, mailbox: str | None = None,
+             save_attachments: str | None = None,
+             msgid: str | None = None) -> dict[str, Any]:
+        """Read one message.
 
+        Pass `mailbox` alongside a UID from a narrowed search, or pass `msgid`
+        (X-GM-MSGID) when the reference has to survive crossing mailboxes.
+        """
         def run(imap: imaplib.IMAP4_SSL):
-            self._select(imap, mailbox)
-            status, data = imap.uid("FETCH", uid, "(RFC822)")
-            if status != "OK" or not data or not isinstance(data[0], tuple):
-                raise GmailError(f"No message with uid {uid}")
-            msg = BytesParser(policy=policy.default).parsebytes(data[0][1])
+            box, real_uid = self._resolve_ref(imap, uid, mailbox, msgid)
+            status, data = imap.uid("FETCH", real_uid, "(RFC822 X-GM-MSGID)")
+            item = next((x for x in data or [] if isinstance(x, tuple)), None)
+            if status != "OK" or item is None:
+                raise GmailError(
+                    f"No message with uid {real_uid} in {imap_utf7_decode(box)}"
+                )
+            meta, raw = item
+            msg = BytesParser(policy=policy.default).parsebytes(raw)
             plain, rich = _extract_body(msg)
             attachments = _attachment_meta(msg)
             result = {
-                "uid": uid,
+                "uid": real_uid,
+                "msgid": _parse_msgid(meta),
+                "mailbox": imap_utf7_decode(box),
+                "mailbox_raw": box,
                 "from": decode_mime(msg.get("From")),
                 "to": decode_mime(msg.get("To")),
                 "cc": decode_mime(msg.get("Cc")),
@@ -534,17 +725,22 @@ class MailClient:
 
         return self._run(run)
 
-    def attachment(self, uid: str, index: int,
-                   mailbox: str | None = None) -> tuple[str, str, bytes]:
-        uid = str(uid).strip()
+    def attachment(self, uid: str | None = None, index: int | None = None,
+                   mailbox: str | None = None,
+                   msgid: str | None = None) -> tuple[str, str, bytes]:
+        if index is None:
+            raise GmailError("index is required")
         index = int(index)
 
         def run(imap: imaplib.IMAP4_SSL):
-            self._select(imap, mailbox)
-            status, data = imap.uid("FETCH", uid, "(RFC822)")
-            if status != "OK" or not data or not isinstance(data[0], tuple):
-                raise GmailError(f"No message with uid {uid}")
-            msg = BytesParser(policy=policy.default).parsebytes(data[0][1])
+            box, real_uid = self._resolve_ref(imap, uid, mailbox, msgid)
+            status, data = imap.uid("FETCH", real_uid, "(RFC822)")
+            item = next((x for x in data or [] if isinstance(x, tuple)), None)
+            if status != "OK" or item is None:
+                raise GmailError(
+                    f"No message with uid {real_uid} in {imap_utf7_decode(box)}"
+                )
+            msg = BytesParser(policy=policy.default).parsebytes(item[1])
             parts = [p for p in msg.walk() if p.get_filename()]
             if index < 0 or index >= len(parts):
                 raise GmailError(
@@ -568,6 +764,9 @@ class MailClient:
         html: bool = False,
         attachments: Iterable[str] | None = None,
         reply_to_uid: str | None = None,
+        reply_mailbox: str | None = None,
+        reply_msgid: str | None = None,
+        dry_run: bool = False,
     ) -> dict[str, Any]:
         to_list = _clean_addresses(to)
         if not to_list:
@@ -578,6 +777,8 @@ class MailClient:
         body = body or ""
         if not subject and not body:
             raise GmailError("Both subject and body are empty")
+
+        action = "reply" if (reply_to_uid or reply_msgid) else "send"
 
         msg = EmailMessage()
         msg["From"] = self.settings.address
@@ -596,10 +797,10 @@ class MailClient:
         else:
             msg.set_content(body)
 
+        paths: list[Path] = []
         for raw_path in attachments or []:
-            path = Path(raw_path).expanduser()
-            if not path.is_file():
-                raise GmailError(f"Attachment not found: {path}")
+            path = resolve_attachment(raw_path)
+            paths.append(path)
             ctype, _ = mimetypes.guess_type(path.name)
             maintype, subtype = (ctype or "application/octet-stream").split("/", 1)
             msg.add_attachment(
@@ -607,30 +808,55 @@ class MailClient:
                 filename=path.name,
             )
 
-        if reply_to_uid:
-            self._apply_threading(msg, str(reply_to_uid))
-
         recipients = to_list + cc_list + bcc_list
-        refused = self._smtp_send(msg, recipients)
+        if dry_run:
+            _audit("dry_run", action=action, to=recipients, subject=subject,
+                   attachments=[p.name for p in paths])
+            return {
+                "ok": True,
+                "dry_run": True,
+                "to": recipients,
+                "subject": subject,
+                "attachments": [p.name for p in paths],
+            }
+
+        _ensure_writable(action)
+        if reply_to_uid or reply_msgid:
+            self._apply_threading(msg, reply_to_uid, reply_mailbox, reply_msgid)
+
+        try:
+            refused = self._smtp_send(msg, recipients)
+        except GmailError as exc:
+            _audit("send_error", action=action, to=recipients, subject=subject,
+                   error=str(exc))
+            raise
         if refused:
+            _audit("send_error", action=action, to=recipients, subject=subject,
+                   error=f"refused: {refused}")
             raise GmailError(f"Recipients refused: {refused}")
+        _audit(action, to=to_list, cc=cc_list, bcc=bcc_list, subject=subject,
+               message_id=str(msg["Message-ID"]),
+               attachments=[p.name for p in paths],
+               reply_to=reply_msgid or reply_to_uid or None)
         return {
             "ok": True,
             "message_id": msg["Message-ID"],
             "to": recipients,
             "subject": subject,
-            "attachments": [Path(p).name for p in (attachments or [])],
+            "attachments": [p.name for p in paths],
         }
 
-    def reply(self, uid: str, body: str, reply_all: bool = False,
-              html: bool = False) -> dict[str, Any]:
-        original = self.read(uid)
+    def reply(self, uid: str | None = None, body: str = "",
+              reply_all: bool = False, html: bool = False,
+              mailbox: str | None = None,
+              msgid: str | None = None) -> dict[str, Any]:
+        original = self.read(uid, mailbox=mailbox, msgid=msgid)
         to = _address_of(original["from"])
         if not to:
             raise GmailError("Cannot work out the original sender")
         cc: list[str] = []
         if reply_all:
-            seen = {to, self.settings.address.lower()}
+            seen = {to.lower(), self.settings.address.lower()}
             for field in ("to", "cc"):
                 for addr in _clean_addresses(
                     _address_of(part) for part in str(original.get(field) or "").split(",")
@@ -644,20 +870,25 @@ class MailClient:
         quoted = "\n".join(f"> {line}" for line in (original.get("text") or "").splitlines())
         full_body = f"{body}\n\n-------- Original message --------\n{quoted}".strip()
         return self.send(
-            to=[to], cc=cc, subject=subject, body=full_body,
-            html=html, reply_to_uid=str(uid),
+            to=[to], cc=cc, subject=subject, body=full_body, html=html,
+            reply_to_uid=original.get("uid"),
+            reply_mailbox=original.get("mailbox_raw"),
+            reply_msgid=original.get("msgid"),
         )
 
-    def _apply_threading(self, msg: EmailMessage, uid: str) -> None:
+    def _apply_threading(self, msg: EmailMessage, uid: str | None = None,
+                         mailbox: str | None = None,
+                         msgid: str | None = None) -> None:
         def run(imap: imaplib.IMAP4_SSL):
-            self._select(imap, None)
+            _, real_uid = self._resolve_ref(imap, uid, mailbox, msgid)
             status, data = imap.uid(
-                "FETCH", uid,
+                "FETCH", real_uid,
                 "(BODY.PEEK[HEADER.FIELDS (MESSAGE-ID REFERENCES)])",
             )
-            if status != "OK" or not data or not isinstance(data[0], tuple):
+            item = next((x for x in data or [] if isinstance(x, tuple)), None)
+            if status != "OK" or item is None:
                 return
-            head = BytesParser(policy=policy.default).parsebytes(data[0][1])
+            head = BytesParser(policy=policy.default).parsebytes(item[1])
             original_id = (head.get("Message-ID") or "").strip()
             if not original_id:
                 return

@@ -102,11 +102,17 @@ def cmd_send(args) -> int:
             html=args.html,
             attachments=args.attach,
             reply_to_uid=args.reply_to_uid,
+            reply_mailbox=args.reply_mailbox,
+            reply_msgid=args.reply_msgid,
+            dry_run=args.dry_run,
         )
     finally:
         client.close()
     if args.dry_run:
         print("(dry run) would send to:", ", ".join(result["to"]))
+        print("Subject:", result["subject"])
+        if result["attachments"]:
+            print("Attachments:", ", ".join(result["attachments"]))
         return 0
     _emit(result, True)
     return 0
@@ -132,12 +138,16 @@ def cmd_search(args) -> int:
 
 
 def cmd_read(args) -> int:
+    if not args.uid and not args.msgid:
+        print("Pass --uid (with --mailbox) or --msgid.", file=sys.stderr)
+        return 2
     client = MailClient(load_settings())
     try:
         data = client.read(
             args.uid,
             mailbox=args.mailbox,
             save_attachments=args.save_attachments,
+            msgid=args.msgid,
         )
     finally:
         client.close()
@@ -198,6 +208,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--html", action="store_true", help="treat --body as HTML")
     p.add_argument("--attach", action="append", metavar="PATH")
     p.add_argument("--reply-to-uid", help="thread this as a reply")
+    p.add_argument("--reply-mailbox",
+                   help="mailbox the reply uid came from (search prints it)")
+    p.add_argument("--reply-msgid", help="X-GM-MSGID of the message to reply to")
     p.add_argument("--dry-run", action="store_true")
     p.set_defaults(func=cmd_send)
 
@@ -209,8 +222,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_search)
 
     p = sub.add_parser("read", help="read one message")
-    p.add_argument("--uid", required=True)
-    p.add_argument("--mailbox")
+    p.add_argument("--uid")
+    p.add_argument("--msgid", help="X-GM-MSGID (stable across mailboxes)")
+    p.add_argument("--mailbox", help="mailbox the uid belongs to")
     p.add_argument("--save-attachments", metavar="DIR")
     p.add_argument("--json", action="store_true")
     p.set_defaults(func=cmd_read)

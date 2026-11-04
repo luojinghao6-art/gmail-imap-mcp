@@ -23,7 +23,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, quote, urlparse
+from urllib.parse import parse_qs, quote, urlsplit, urlparse
 
 from ..core import (
     GmailError,
@@ -31,6 +31,7 @@ from ..core import (
     Settings,
     config_file,
     has_credentials,
+    is_read_only,
     load_settings,
     save_settings,
 )
@@ -67,8 +68,9 @@ class ApiError(Exception):
 # ---------------------------------------------------------------- handlers
 
 def status_payload() -> dict[str, Any]:
+    base = {"config_path": str(config_file()), "read_only": is_read_only()}
     if not has_credentials():
-        return {"configured": False, "address": None, "connected": False}
+        return {**base, "configured": False, "address": None, "connected": False}
     settings = load_settings()
     connected = False
     error = None
@@ -77,7 +79,7 @@ def status_payload() -> dict[str, Any]:
         connected = True
     except GmailError as exc:
         error = str(exc)
-    return {"configured": True, "address": settings.address,
+    return {**base, "configured": True, "address": settings.address,
             "connected": connected, "error": error}
 
 
@@ -113,9 +115,10 @@ def list_messages(query: str, limit: int, mailbox: str | None) -> dict[str, Any]
         raise ApiError(str(exc)) from exc
 
 
-def get_message(uid: str, mailbox: str | None) -> dict[str, Any]:
+def get_message(uid: str | None, mailbox: str | None,
+                msgid: str | None = None) -> dict[str, Any]:
     try:
-        data = client().read(uid, mailbox=mailbox)
+        data = client().read(uid, mailbox=mailbox, msgid=msgid)
     except GmailError as exc:
         raise ApiError(str(exc)) from exc
     # The UI indexes attachments by position; core already does, but keep the
@@ -127,9 +130,10 @@ def get_message(uid: str, mailbox: str | None) -> dict[str, Any]:
     return data
 
 
-def get_attachment(uid: str, idx: int, mailbox: str | None):
+def get_attachment(uid: str | None, idx: int, mailbox: str | None,
+                   msgid: str | None = None):
     try:
-        return client().attachment(uid, idx, mailbox=mailbox)
+        return client().attachment(uid, idx, mailbox=mailbox, msgid=msgid)
     except GmailError as exc:
         raise ApiError(str(exc)) from exc
 
@@ -161,6 +165,7 @@ def send_mail(payload: dict[str, Any]) -> dict[str, Any]:
                 html=bool(payload.get("html")),
                 attachments=paths,
                 reply_to_uid=(payload.get("reply_to_uid") or "").strip() or None,
+                reply_mailbox=(payload.get("reply_to_mailbox") or "").strip() or None,
             )
         except GmailError as exc:
             raise ApiError(str(exc)) from exc
@@ -179,6 +184,52 @@ STATIC = {
 }
 
 
+LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1"}
+MAX_BODY = 32 * 1024 * 1024  # JSON body ceiling, attachments included
+CSP = (
+    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
+    "img-src 'self' data:; font-src 'self' data:; connect-src 'self'; "
+    "frame-src 'self'; base-uri 'none'; form-action 'none'; "
+    "frame-ancestors 'none'"
+)
+
+
+def _hostname(value: str | None) -> str | None:
+    if not value:
+        return None
+    try:
+        return urlsplit("//" + value.strip()).hostname
+    except ValueError:
+        return None
+
+
+def host_allowed(value: str | None) -> bool:
+    """Only loopback Host headers, so DNS rebinding stays out."""
+    return _hostname(value) in LOCAL_HOSTS
+
+
+def origin_allowed(value: str | None, port: int) -> bool:
+    if not value:
+        return True
+    try:
+        parsed = urlsplit(value)
+    except ValueError:
+        return False
+    if parsed.scheme not in ("http", "https"):
+        return False
+    if parsed.hostname not in LOCAL_HOSTS:
+        return False
+    return parsed.port in (None, port)
+
+
+def request_origin_allowed(headers, port: int) -> bool:
+    """Reject browser writes that did not come from this UI."""
+    origin = headers.get("Origin")
+    if origin is not None:
+        return origin_allowed(origin, port)
+    return origin_allowed(headers.get("Referer"), port)
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "gmail-imap-ui/0.1"
 
@@ -191,8 +242,15 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Cache-Control", "no-store")
+        self._security_headers()
         self.end_headers()
         self.wfile.write(data)
+
+    def _security_headers(self) -> None:
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("Content-Security-Policy", CSP)
 
     def _err(self, msg: Any, status: int = 400) -> None:
         self._json({"ok": False, "error": str(msg)}, status)
@@ -203,7 +261,12 @@ class Handler(BaseHTTPRequestHandler):
         return secrets.compare_digest((query.get("t") or [""])[0], TOKEN)
 
     def _read_json(self) -> dict:
-        length = int(self.headers.get("Content-Length") or 0)
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError as exc:
+            raise ApiError("Bad Content-Length") from exc
+        if length > MAX_BODY:
+            raise ApiError("Request body too large")
         if length <= 0:
             return {}
         try:
@@ -212,6 +275,8 @@ class Handler(BaseHTTPRequestHandler):
             raise ApiError("Request body is not valid JSON") from exc
 
     def do_GET(self) -> None:  # noqa: N802
+        if not host_allowed(self.headers.get("Host")):
+            return self._err("invalid Host header", 403)
         parsed = urlparse(self.path)
         path, query = parsed.path, parse_qs(parsed.query)
 
@@ -227,6 +292,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", ctype)
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Cache-Control", "no-store")
+            self._security_headers()
             self.end_headers()
             self.wfile.write(body)
             return
@@ -252,17 +318,20 @@ class Handler(BaseHTTPRequestHandler):
                 mailbox = (query.get("mailbox") or [None])[0]
                 return self._json(list_messages(q, limit, mailbox))
             if path == "/api/message":
-                uid = (query.get("uid") or [""])[0]
-                if not uid:
-                    raise ApiError("uid is required")
+                uid = (query.get("uid") or [None])[0]
+                msgid = (query.get("msgid") or [None])[0]
+                if not uid and not msgid:
+                    raise ApiError("uid (or msgid) is required")
                 mailbox = (query.get("mailbox") or [None])[0]
-                return self._json(get_message(uid, mailbox))
+                return self._json(get_message(uid, mailbox, msgid))
             if path == "/api/attachment":
-                uid = (query.get("uid") or [""])[0]
+                uid = (query.get("uid") or [None])[0]
+                msgid = (query.get("msgid") or [None])[0]
                 idx = int((query.get("idx") or ["-1"])[0])
-                if not uid or idx < 0:
-                    raise ApiError("uid and idx are required")
-                filename, ctype, blob = get_attachment(uid, idx, None)
+                if (not uid and not msgid) or idx < 0:
+                    raise ApiError("uid (or msgid) and idx are required")
+                mailbox = (query.get("mailbox") or [None])[0]
+                filename, ctype, blob = get_attachment(uid, idx, mailbox, msgid)
                 self.send_response(200)
                 self.send_header("Content-Type", ctype or "application/octet-stream")
                 self.send_header("Content-Length", str(len(blob)))
@@ -284,6 +353,14 @@ class Handler(BaseHTTPRequestHandler):
             return self._err(f"Server error: {exc}", 500)
 
     def do_POST(self) -> None:  # noqa: N802
+        if not host_allowed(self.headers.get("Host")):
+            return self._err("invalid Host header", 403)
+        port = self.server.server_address[1]
+        if not request_origin_allowed(self.headers, port):
+            return self._err("cross-origin request rejected", 403)
+        ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+        if ctype != "application/json":
+            return self._err("Content-Type must be application/json", 415)
         parsed = urlparse(self.path)
         path, query = parsed.path, parse_qs(parsed.query)
         if not self._authorized(query):

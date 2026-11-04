@@ -26,7 +26,8 @@
   const state = {
     status: {}, labels: [], messages: [], selected: null,
     query: 'in:inbox', limit: 30, activeFolder: 'in:inbox',
-    attachments: [], replyToUid: null, busy: false,
+    attachments: [], replyToUid: null, replyToMailbox: null,
+    mailboxRaw: null, busy: false,
   };
 
   /* ------------------------------------------------------------ 基础 */
@@ -118,6 +119,12 @@
     try {
       const st = await api('/api/status');
       state.status = st;
+      const credPath = $('credPath');
+      if (credPath && st.config_path) credPath.textContent = st.config_path;
+      if (st.read_only) {
+        el.sendBtn.disabled = true;
+        el.sendBtn.title = '只读模式（GMAIL_MCP_READ_ONLY=1）';
+      }
       if (!st.configured) {
         showSetup();
         setStatus('err', '未配置账号');
@@ -325,6 +332,7 @@
         `/api/messages?q=${encodeURIComponent(state.query)}&limit=${limit}`
       );
       state.messages = data.messages || [];
+      state.mailboxRaw = data.mailbox_raw || null;
       state.limit = limit;
       renderMessages();
       const st = state.status;
@@ -463,7 +471,8 @@ ${m.html}`;
       for (const a of m.attachments) {
         const link = document.createElement('a');
         link.className = 'att-chip';
-        link.href = `/api/attachment?uid=${encodeURIComponent(m.uid)}&idx=${a.idx}&t=${encodeURIComponent(TOKEN)}`;
+        const box = m.mailbox_raw ? `&mailbox=${encodeURIComponent(m.mailbox_raw)}` : '';
+        link.href = `/api/attachment?uid=${encodeURIComponent(m.uid)}&idx=${a.idx}${box}&t=${encodeURIComponent(TOKEN)}`;
         link.setAttribute('download', a.name);
         const name = document.createElement('span');
         name.textContent = '📎 ' + a.name;
@@ -491,7 +500,9 @@ ${m.html}`;
     el.readerEmpty.querySelector('p').textContent = '读取中…';
     el.readerBody.classList.add('hidden');
     try {
-      const m = await api(`/api/message?uid=${encodeURIComponent(uid)}`);
+      const boxArg = state.mailboxRaw
+        ? `&mailbox=${encodeURIComponent(state.mailboxRaw)}` : '';
+      const m = await api(`/api/message?uid=${encodeURIComponent(uid)}${boxArg}`);
       renderReader(m);
       const backBtn = el.readerBody.querySelector('.rd-back');
       if (backBtn) backBtn.style.display = window.innerWidth <= 860 ? 'inline-block' : 'none';
@@ -505,6 +516,7 @@ ${m.html}`;
 
   function openCompose(prefill = {}) {
     state.replyToUid = prefill.replyToUid || null;
+    state.replyToMailbox = prefill.replyToMailbox || null;
     state.attachments = [];
     renderComposeAttachments();
     el.cTo.value = prefill.to || '';
@@ -523,6 +535,7 @@ ${m.html}`;
     el.composePanel.classList.add('hidden');
     state.attachments = [];
     state.replyToUid = null;
+    state.replyToMailbox = null;
   }
 
   function reply(m, all) {
@@ -543,7 +556,10 @@ ${m.html}`;
       '',
       (m.text || '').split('\n').map(line => '> ' + line).join('\n'),
     ].join('\n');
-    openCompose({ to, cc, subject, body: quoted, replyToUid: m.uid });
+    openCompose({
+      to, cc, subject, body: quoted, replyToUid: m.uid,
+      replyToMailbox: m.mailbox_raw || state.mailboxRaw,
+    });
   }
 
   el.composeBtn.addEventListener('click', () => openCompose());
@@ -614,6 +630,10 @@ ${m.html}`;
   }
 
   el.sendBtn.addEventListener('click', async () => {
+    if (state.status.read_only) {
+      toast('只读模式：服务器设置了 GMAIL_MCP_READ_ONLY，不能发信', 'err');
+      return;
+    }
     const to = splitAddrs(el.cTo.value);
     if (!to.length) {
       toast('收件人还没填', 'err');
@@ -639,6 +659,7 @@ ${m.html}`;
           html: el.cHtml.checked,
           attachments: state.attachments.map(a => ({ name: a.name, data: a.data })),
           reply_to_uid: state.replyToUid,
+          reply_to_mailbox: state.replyToMailbox,
         },
       });
       closeCompose();
@@ -648,7 +669,7 @@ ${m.html}`;
     } catch (err) {
       toast('发送失败：' + err.message, 'err');
     } finally {
-      el.sendBtn.disabled = false;
+      el.sendBtn.disabled = !!state.status.read_only;
       el.sendBtn.textContent = '发送';
     }
   });

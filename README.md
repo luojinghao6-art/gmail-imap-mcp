@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/luojinghao6-art/gmail-imap-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/luojinghao6-art/gmail-imap-mcp/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/luojinghao6-art/gmail-imap-mcp)](https://github.com/luojinghao6-art/gmail-imap-mcp/releases)
-[![Python](https://img.shields.io/badge/python-3.9%2B-blue)](https://www.python.org/)
+[![Python](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/)
 
 **Gmail for AI agents — App Password only. No OAuth, no Google Cloud project, no relay.**
 
@@ -70,6 +70,9 @@ you need those, use a Gmail API server.
 - **Batched header fetch** — one round trip per page instead of two per message
   (30 messages: ~25 s with the naive version, ~4 s now on a real account; the
   rest is TLS login plus one search round trip)
+- **Mailbox-safe message references** — every search hit carries its `mailbox`
+  and an account-wide `msgid` (`X-GM-MSGID`). UIDs are only unique *inside* a
+  mailbox, so read/reply/download take the pair instead of guessing
 - **Attachment download** and save-to-disk
 - **Localised folder names decoded** from IMAP modified UTF-7
   (`[Gmail]/&XfJSIJZkkK5O9g-` → `[Gmail]/已删除邮件`)
@@ -93,7 +96,7 @@ pip install "gmail-imap-mcp @ https://github.com/luojinghao6-art/gmail-imap-mcp/
 Once the package is on PyPI, the short form works too:
 `pip install "gmail-imap-mcp[mcp]"` or `uvx --from "gmail-imap-mcp[mcp]" gmail-imap-mcp`.
 
-Requires Python 3.9+.
+Requires Python 3.10+ — the bundled MCP SDK does not support 3.9.
 
 ## Configure
 
@@ -179,25 +182,31 @@ is deliberate.
 | Tool | What it does |
 |---|---|
 | `gmail_status` | Is it configured? Does IMAP login work? |
-| `gmail_search(query, limit, mailbox)` | Gmail-syntax search, returns headers + uid |
-| `gmail_read(uid, save_attachments_to?)` | Full message: text, HTML, attachment list |
-| `gmail_send(to, subject, body, cc?, bcc?, html?, attachments?, reply_to_uid?)` | Send |
-| `gmail_reply(uid, body, reply_all?)` | Reply, quoting the original, threading preserved |
+| `gmail_search(query, limit, mailbox)` | Gmail-syntax search, returns headers + uid + msgid + mailbox |
+| `gmail_read(uid?, mailbox?, msgid?, save_attachments_to?)` | Full message: text, HTML, attachment list |
+| `gmail_send(to, subject, body, cc?, bcc?, html?, attachments?, reply_to_uid?, reply_mailbox?, reply_msgid?)` | Send |
+| `gmail_reply(uid?, body, reply_all?, mailbox?, msgid?)` | Reply, quoting the original, threading preserved |
 | `gmail_labels()` | Folders and labels, decoded |
-| `gmail_download_attachment(uid, index, save_to)` | Save one attachment to disk |
+| `gmail_download_attachment(uid?, index, save_to, mailbox?, msgid?)` | Save one attachment to disk |
+
+Pass the `mailbox` returned by `gmail_search` together with its `uid`. UIDs are
+per-mailbox; without the mailbox a read can resolve to a different message in
+All Mail. `msgid` is account-wide and never has that problem.
 
 ## CLI
 
 ```bash
 gmail-imap status
 gmail-imap search --query "from:boss newer_than:7d" --limit 10
-gmail-imap read --uid 12345 --save-attachments ./attachments
+gmail-imap read --uid 12345 --mailbox "INBOX" --save-attachments ./attachments
+gmail-imap read --msgid 1278455344230334865
 gmail-imap send --to a@b.com --subject "Hi" --body "Hello"
-gmail-imap send --to a@b.com --subject "Report" --body "See attached" --attach report.pdf
+gmail-imap send --to a@b.com --subject "Report" --body "See attached" --attach report.pdf --dry-run
 gmail-imap labels
 ```
 
 Add `--json` to `search` / `read` / `labels` for machine-readable output.
+`--dry-run` builds the message and prints the recipients without touching SMTP.
 
 ## Security notes
 
@@ -210,7 +219,22 @@ Add `--json` to `search` / `read` / `labels` for machine-readable output.
   AI. `server.py` tells the model to treat email content as data, but prompt
   injection is not solvable with a sentence — review before letting an agent
   send mail on your behalf.
-- **The web UI is localhost-only** and token-gated. Do not port-forward it.
+- **The web UI is localhost-only** and token-gated. It also rejects foreign
+  `Host` headers (DNS rebinding), checks `Origin`/`Referer` on writes, requires
+  `Content-Type: application/json`, and sends CSP, `X-Frame-Options: DENY`,
+  `nosniff` and `no-referrer`. Do not port-forward it.
+
+### Code-level send controls
+
+Prompt instructions are a suggestion; these are enforced in
+`gmail_imap_mcp.core` for the MCP server, CLI and web UI alike:
+
+| Control | Effect |
+|---|---|
+| `GMAIL_MCP_READ_ONLY=1` | `send` and `reply` raise before touching SMTP. Everything read-only still works |
+| `GMAIL_MCP_ATTACHMENT_DIRS=/path/a:/path/b` | Attachments must resolve inside one of these roots (`os.pathsep`-separated) |
+| always on | Files that look like credentials (`.credentials.json`, `.env*`, `*.pem`, `*.key`, `id_rsa`), the credentials file itself, the audit log, and anything under `.ssh` are refused as attachments |
+| always on | Every send, reply and blocked attempt is appended as JSON to `audit.log` next to the credentials file |
 
 ## Troubleshooting
 
@@ -225,9 +249,11 @@ Add `--json` to `search` / `read` / `labels` for machine-readable output.
 ## Status
 
 Working and dogfooded against a real personal Gmail account: search, read,
-attachments, send, reply, web UI. Not covered yet: draft editing, filters,
-Gmail settings (IMAP cannot do these), and automated tests against a live
-mailbox.
+attachments, send, reply, web UI. The offline suite covers IMAP FETCH/SEARCH
+fixtures, message construction and threading, attachment saving, UID/mailbox
+resolution, the send policy and audit log, web token/Host/Origin/CSP, and the
+MCP tool schema. Not covered yet: draft editing, filters, Gmail settings (IMAP
+cannot do these), and tests against a live mailbox.
 
 Issues and PRs welcome. Please open an issue before large changes.
 
