@@ -27,7 +27,7 @@ Ships three front-ends over one core:
 
 ```bash
 # install the release wheel (PyPI publication is pending)
-pip install "gmail-imap-mcp[mcp] @ https://github.com/luojinghao6-art/gmail-imap-mcp/releases/download/v0.1.0/gmail_imap_mcp-0.1.0-py3-none-any.whl"
+pip install "gmail-imap-mcp[mcp] @ https://github.com/luojinghao6-art/gmail-imap-mcp/releases/download/v0.1.1/gmail_imap_mcp-0.1.1-py3-none-any.whl"
 gmail-imap config                      # paste a Google App Password (16 chars)
 ```
 
@@ -83,14 +83,14 @@ you need those, use a Gmail API server.
 ## Install
 
 ```bash
-# from the v0.1.0 release wheel (no PyPI account needed)
-pip install "gmail-imap-mcp[mcp] @ https://github.com/luojinghao6-art/gmail-imap-mcp/releases/download/v0.1.0/gmail_imap_mcp-0.1.0-py3-none-any.whl"
+# from the v0.1.1 release wheel (no PyPI account needed)
+pip install "gmail-imap-mcp[mcp] @ https://github.com/luojinghao6-art/gmail-imap-mcp/releases/download/v0.1.1/gmail_imap_mcp-0.1.1-py3-none-any.whl"
 
 # or straight from the repo
 pip install "git+https://github.com/luojinghao6-art/gmail-imap-mcp.git#egg=gmail-imap-mcp[mcp]"
 
 # CLI only, zero dependencies
-pip install "gmail-imap-mcp @ https://github.com/luojinghao6-art/gmail-imap-mcp/releases/download/v0.1.0/gmail_imap_mcp-0.1.0-py3-none-any.whl"
+pip install "gmail-imap-mcp @ https://github.com/luojinghao6-art/gmail-imap-mcp/releases/download/v0.1.1/gmail_imap_mcp-0.1.1-py3-none-any.whl"
 ```
 
 Once the package is on PyPI, the short form works too:
@@ -247,6 +247,9 @@ Prompt instructions are a suggestion; these are enforced in
 | Chinese folder names look like `&XfJSIJZkkK5O9g-` | Fixed — decoded automatically since 0.1.0 |
 
 ## Status
+
+v0.1.1 fixes mailbox-scoped UID handling, hardens the web UI (Host/Origin/
+CSP) and adds code-level send controls — see the release notes.
 
 Working and dogfooded against a real personal Gmail account: search, read,
 attachments, send, reply, web UI. The offline suite covers IMAP FETCH/SEARCH
