@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "gmail": {
+      "command": "uvx",
+      "args": ["--from", "gmail-imap-mcp[mcp]", "gmail-imap-mcp"]
+    }
+  }
+}

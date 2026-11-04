@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "gmail": {
+      "command": "uvx",
+      "args": ["--from", "gmail-imap-mcp[mcp]", "gmail-imap-mcp"],
+      "env": {
+        "GMAIL_ADDRESS": "you@gmail.com",
+        "GMAIL_APP_PASSWORD": "xxxx xxxx xxxx xxxx"
+      }
+    }
+  }
+}

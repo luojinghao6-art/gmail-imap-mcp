@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="app-token" content="__APP_TOKEN__">
+<title>Mail · gmail-imap</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<!-- 初始化 / 配置 -->
+<div id="setup" class="setup hidden">
+  <div class="setup-card">
+    <h1>连接你的 Gmail</h1>
+    <p class="hint">
+      不用 Google API，不用 OAuth。去
+      <a href="https://myaccount.google.com/apppasswords" target="_blank" rel="noreferrer">应用专用密码</a>
+      生成一个 16 位的密码（需要先开两步验证），填在下面。
+    </p>
+    <label>邮箱地址<input id="setupAddress" type="email" placeholder="you@gmail.com" autocomplete="username"></label>
+    <label>App Password<input id="setupPassword" type="password" placeholder="xxxx xxxx xxxx xxxx" autocomplete="off"></label>
+    <button id="setupSave" class="primary">保存并测试</button>
+    <p id="setupMsg" class="setup-msg"></p>
+    <p class="tiny">凭据只存在本机 <code>~/.claude/skills/gmail/.credentials.json</code></p>
+  </div>
+</div>
+
+<div class="app">
+  <aside class="rail">
+    <div class="brand">
+      <span class="logo">✉</span>
+      <div class="brand-text"><b>Mail</b><small id="accountLabel">未连接</small></div>
+    </div>
+
+    <button id="composeBtn" class="compose-btn">✎&nbsp; 写邮件</button>
+
+    <nav id="folders" class="folders"></nav>
+
+    <div class="rail-foot">
+      <button id="reconnectBtn" title="重新连接 IMAP">↻ 重连</button>
+      <button id="settingsBtn" title="修改账号">⚙ 设置</button>
+    </div>
+  </aside>
+
+  <main class="main">
+    <header class="topbar">
+      <div class="searchbox">
+        <span class="search-icon">⌕</span>
+        <input id="searchInput" placeholder="搜索：from:boss newer_than:7d has:attachment">
+        <button id="searchClear" class="icon-btn hidden" title="清空">×</button>
+      </div>
+      <button id="searchBtn" class="primary small">搜索</button>
+    </header>
+
+    <div class="chips" id="chips">
+      <button class="chip active" data-q="in:inbox">收件箱</button>
+      <button class="chip" data-q="is:unread in:anywhere">未读</button>
+      <button class="chip" data-q="has:attachment newer_than:30d in:anywhere">带附件</button>
+      <button class="chip" data-q="newer_than:7d in:anywhere">本周</button>
+      <button class="chip" data-q="is:starred in:anywhere">星标</button>
+    </div>
+
+    <div class="split">
+      <section class="listpane">
+        <div class="listhead">
+          <span id="listTitle">收件箱</span>
+          <span id="listCount" class="count"></span>
+        </div>
+        <ul id="messageList" class="messages"></ul>
+        <div id="listEmpty" class="empty hidden">这里空空的</div>
+        <button id="moreBtn" class="more hidden">加载更多</button>
+      </section>
+
+      <section class="reader" id="reader">
+        <div class="reader-empty" id="readerEmpty">
+          <div class="empty-illust">✉</div>
+          <p>选一封邮件看看</p>
+          <small>或者按 <kbd>c</kbd> 写一封新的</small>
+        </div>
+        <article id="readerBody" class="reader-body hidden"></article>
+      </section>
+    </div>
+  </main>
+
+  <footer class="statusbar">
+    <span id="statusDot" class="dot"></span>
+    <span id="statusText">初始化…</span>
+    <span class="spacer"></span>
+    <span id="statusExtra"></span>
+  </footer>
+</div>
+
+<!-- 窄屏悬浮写信 -->
+<button id="fabCompose" class="fab" title="写邮件">✎</button>
+
+<!-- 写邮件 -->
+<div id="composePanel" class="compose-panel hidden">
+  <div class="compose-head">
+    <span id="composeTitle">新邮件</span>
+    <div>
+      <button id="composeMin" class="icon-btn" title="最小化">—</button>
+      <button id="composeClose" class="icon-btn" title="关闭">×</button>
+    </div>
+  </div>
+  <div class="compose-fields">
+    <div class="field"><label>收件人</label><input id="cTo" type="text" placeholder="a@b.com, c@d.com"></div>
+    <div class="field"><label>主题</label><input id="cSubject" type="text" placeholder="主题"></div>
+    <div class="field cc-row">
+      <label>抄送</label><input id="cCc" type="text" placeholder="可选">
+    </div>
+    <div class="field cc-row">
+      <label>密送</label><input id="cBcc" type="text" placeholder="可选">
+    </div>
+  </div>
+  <textarea id="cBody" placeholder="正文…" spellcheck="false"></textarea>
+  <div id="cAttachList" class="attachments"></div>
+  <div class="compose-foot">
+    <button id="attachBtn" class="ghost">📎 附件</button>
+    <input id="attachInput" type="file" multiple hidden>
+    <label class="checkbox"><input id="cHtml" type="checkbox"> 按 HTML 发送</label>
+    <span class="spacer"></span>
+    <button id="sendBtn" class="primary">发送</button>
+  </div>
+</div>
+
+<div id="toast" class="toast"></div>
+
+<script src="/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gmail-imap-mcp"
+version = "0.1.0"
+description = "Gmail for AI agents over IMAP/SMTP with an App Password — no OAuth, no Google Cloud project, no relay."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+keywords = ["gmail", "mcp", "model-context-protocol", "claude", "agent", "email", "imap", "smtp", "skills"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Topic :: Communications :: Email",
+    "Topic :: Communications :: Email :: Post-Office :: IMAP",
+    "Topic :: Communications :: Email :: Post-Office :: SMTP",
+]
+dependencies = []
+
+[project.optional-dependencies]
+mcp = ["mcp>=1.2"]
+socks = ["PySocks>=1.7"]
+
+[project.scripts]
+gmail-imap = "gmail_imap_mcp.cli:main"
+gmail-imap-mcp = "gmail_imap_mcp.server:main"
+gmail-imap-ui = "gmail_imap_mcp.web.app:main"
+
+[project.urls]
+Homepage = "https://github.com/luojinghao6-art/gmail-imap-mcp"
+Issues = "https://github.com/luojinghao6-art/gmail-imap-mcp/issues"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"gmail_imap_mcp.web" = ["*.html", "*.css", "*.js"]
