@@ -19,6 +19,22 @@ Ships three front-ends over one core:
 
 ---
 
+## Quick start
+
+```bash
+pip install "gmail-imap-mcp[mcp]"     # or install from a release wheel, see below
+gmail-imap config                      # paste a Google App Password (16 chars)
+```
+
+Then point your AI at it — one line for any MCP client:
+
+```bash
+claude mcp add gmail -- gmail-imap-mcp
+```
+
+No App Password yet? [Create one here](https://myaccount.google.com/apppasswords)
+— 2-Step Verification must be on first. Full details in [Configure](#configure).
+
 ## Why this exists
 
 Most Gmail MCP servers fall into two camps, and both have a catch:

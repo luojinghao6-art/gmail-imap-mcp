@@ -18,6 +18,22 @@
 
 ---
 
+## 三步上手
+
+```bash
+pip install "gmail-imap-mcp[mcp]"     # 也可以用 release 里的 wheel，见下文
+gmail-imap config                      # 粘贴 16 位应用专用密码
+```
+
+然后让 AI 接上——任意 MCP 客户端一行搞定：
+
+```bash
+claude mcp add gmail -- gmail-imap-mcp
+```
+
+还没有应用专用密码？[去这里生成](https://myaccount.google.com/apppasswords)，
+要先把两步验证打开。完整说明见[配置](#配置)。
+
 ## 为什么要有这个
 
 市面上的 Gmail MCP 基本分两派，各有一个坑：
