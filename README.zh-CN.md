@@ -21,7 +21,8 @@
 ## 三步上手
 
 ```bash
-pip install "gmail-imap-mcp[mcp]"     # 也可以用 release 里的 wheel，见下文
+# 先装 release 里的 wheel（PyPI 还没发）
+pip install "gmail-imap-mcp[mcp] @ https://github.com/luojinghao6-art/gmail-imap-mcp/releases/download/v0.1.0/gmail_imap_mcp-0.1.0-py3-none-any.whl"
 gmail-imap config                      # 粘贴 16 位应用专用密码
 ```
 
@@ -70,15 +71,17 @@ IMAP/SMTP 的标准认证方式。
 ## 安装
 
 ```bash
-# MCP 服务（顺带装上 CLI 和 Web UI）
-uvx --from "gmail-imap-mcp[mcp]" gmail-imap-mcp
+# 从 v0.1.0 release 的 wheel 安装（不用 PyPI 账号）
+pip install "gmail-imap-mcp[mcp] @ https://github.com/luojinghao6-art/gmail-imap-mcp/releases/download/v0.1.0/gmail_imap_mcp-0.1.0-py3-none-any.whl"
 
-# 或者 pip
-pip install "gmail-imap-mcp[mcp]"
+# 或者直接从仓库装
+pip install "git+https://github.com/luojinghao6-art/gmail-imap-mcp.git#egg=gmail-imap-mcp[mcp]"
 
 # 只要 CLI，零依赖
-pip install gmail-imap-mcp
+pip install "gmail-imap-mcp @ https://github.com/luojinghao6-art/gmail-imap-mcp/releases/download/v0.1.0/gmail_imap_mcp-0.1.0-py3-none-any.whl"
 ```
+
+等发到 PyPI 之后，短写法也能用：`pip install "gmail-imap-mcp[mcp]"`。
 
 需要 Python 3.9+。
 

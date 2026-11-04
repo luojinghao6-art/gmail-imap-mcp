@@ -22,7 +22,8 @@ Ships three front-ends over one core:
 ## Quick start
 
 ```bash
-pip install "gmail-imap-mcp[mcp]"     # or install from a release wheel, see below
+# install the release wheel (PyPI publication is pending)
+pip install "gmail-imap-mcp[mcp] @ https://github.com/luojinghao6-art/gmail-imap-mcp/releases/download/v0.1.0/gmail_imap_mcp-0.1.0-py3-none-any.whl"
 gmail-imap config                      # paste a Google App Password (16 chars)
 ```
 
@@ -75,15 +76,18 @@ you need those, use a Gmail API server.
 ## Install
 
 ```bash
-# MCP server (also installs the CLI and web UI)
-uvx --from "gmail-imap-mcp[mcp]" gmail-imap-mcp
+# from the v0.1.0 release wheel (no PyPI account needed)
+pip install "gmail-imap-mcp[mcp] @ https://github.com/luojinghao6-art/gmail-imap-mcp/releases/download/v0.1.0/gmail_imap_mcp-0.1.0-py3-none-any.whl"
 
-# or with pip
-pip install "gmail-imap-mcp[mcp]"
+# or straight from the repo
+pip install "git+https://github.com/luojinghao6-art/gmail-imap-mcp.git#egg=gmail-imap-mcp[mcp]"
 
 # CLI only, zero dependencies
-pip install gmail-imap-mcp
+pip install "gmail-imap-mcp @ https://github.com/luojinghao6-art/gmail-imap-mcp/releases/download/v0.1.0/gmail_imap_mcp-0.1.0-py3-none-any.whl"
 ```
+
+Once the package is on PyPI, the short form works too:
+`pip install "gmail-imap-mcp[mcp]"` or `uvx --from "gmail-imap-mcp[mcp]" gmail-imap-mcp`.
 
 Requires Python 3.9+.
 
