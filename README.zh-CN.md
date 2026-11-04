@@ -3,6 +3,7 @@
 [![CI](https://github.com/luojinghao6-art/gmail-imap-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/luojinghao6-art/gmail-imap-mcp/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/luojinghao6-art/gmail-imap-mcp)](https://github.com/luojinghao6-art/gmail-imap-mcp/releases)
 [![Python](https://img.shields.io/badge/python-3.9%2B-blue)](https://www.python.org/)
+
 **给 AI 用的 Gmail —— 只走应用专用密码。不用 OAuth，不建 GCP 项目，不经过第三方中转。**
 
 [English](README.md) · 简体中文
