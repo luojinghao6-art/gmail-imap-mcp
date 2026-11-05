@@ -14,10 +14,10 @@ from gmail_imap_mcp.core import (
     GmailError,
     PermissionHardeningError,
     _audit,
+    _harden_dir,
     _harden_file,
     _save_attachments,
     _windows_acl_private,
-    _windows_principals,
     audit_log_path,
     load_settings,
     save_settings,
@@ -131,7 +131,29 @@ class PermissionTests(Base):
     def test_windows_acl_is_verified(self):
         path = self.probe()
         self.assertTrue(_harden_file(path))
-        self.assertTrue(_windows_acl_private(path, _windows_principals()))
+        self.assertTrue(_windows_acl_private(path))
+
+    @unittest.skipUnless(os.name == "nt", "Windows ACLs")
+    def test_hardening_a_folder_keeps_it_usable(self):
+        """Protecting a parent must not leave children with an empty DACL."""
+        home = Path(self.tmp.name) / "home"
+        child = home / "child"
+        child.mkdir(parents=True)
+        (child / "keep.txt").write_text("x", encoding="utf-8")
+        self.assertTrue(_harden_dir(home))
+        self.assertEqual(os.listdir(child), ["keep.txt"])
+        (child / "new.txt").write_text("y", encoding="utf-8")
+        self.assertTrue(_windows_acl_private(child))
+
+    def test_harden_dir_is_the_verifying_version(self):
+        folder = Path(self.tmp.name) / "dir"
+        folder.mkdir()
+        self.assertIs(_harden_dir(folder), True)
+
+    def test_acl_check_survives_decoding_errors(self):
+        boom = UnicodeDecodeError("gbk", bytes([255]), 0, 1, "bad byte")
+        with mock.patch("gmail_imap_mcp.core.subprocess.run", side_effect=boom):
+            self.assertFalse(_windows_acl_private(self.probe()))
 
     @unittest.skipIf(os.name == "nt", "POSIX file modes only")
     def test_saved_credentials_are_owner_only(self):

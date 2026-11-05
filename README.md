@@ -27,7 +27,7 @@ Ships three front-ends over one core:
 
 ```bash
 # install the release wheel (PyPI publication is pending)
-pip install "gmail-imap-mcp[mcp] @ https://github.com/luojinghao6-art/gmail-imap-mcp/releases/download/v0.1.6/gmail_imap_mcp-0.1.6-py3-none-any.whl"
+pip install "gmail-imap-mcp[mcp] @ https://github.com/luojinghao6-art/gmail-imap-mcp/releases/download/v0.1.7/gmail_imap_mcp-0.1.7-py3-none-any.whl"
 gmail-imap config                      # paste a Google App Password (16 chars)
 ```
 
@@ -83,14 +83,14 @@ you need those, use a Gmail API server.
 ## Install
 
 ```bash
-# from the v0.1.6 release wheel (no PyPI account needed)
-pip install "gmail-imap-mcp[mcp] @ https://github.com/luojinghao6-art/gmail-imap-mcp/releases/download/v0.1.6/gmail_imap_mcp-0.1.6-py3-none-any.whl"
+# from the v0.1.7 release wheel (no PyPI account needed)
+pip install "gmail-imap-mcp[mcp] @ https://github.com/luojinghao6-art/gmail-imap-mcp/releases/download/v0.1.7/gmail_imap_mcp-0.1.7-py3-none-any.whl"
 
 # or straight from the repo
 pip install "git+https://github.com/luojinghao6-art/gmail-imap-mcp.git#egg=gmail-imap-mcp[mcp]"
 
 # CLI only, zero dependencies
-pip install "gmail-imap-mcp @ https://github.com/luojinghao6-art/gmail-imap-mcp/releases/download/v0.1.6/gmail_imap_mcp-0.1.6-py3-none-any.whl"
+pip install "gmail-imap-mcp @ https://github.com/luojinghao6-art/gmail-imap-mcp/releases/download/v0.1.7/gmail_imap_mcp-0.1.7-py3-none-any.whl"
 ```
 
 Once the package is on PyPI, the short form works too:
@@ -226,8 +226,10 @@ Add `--json` to `search` / `read` / `labels` for machine-readable output.
 - **Credentials are owner-only on disk, and that is checked.** The config file
   is created empty, locked down, and only then filled, so the password never
   exists under inherited permissions. POSIX verifies the mode with `stat`;
-  Windows removes the inherited ACEs, grants the current user, and reads the ACL
-  back to confirm nothing else remains. If that cannot be done the tool warns
+  Windows resets the ACL — explicit and inherited ACEs alike — grants the
+  current user (with inheritance on the config folder, so its contents stay
+  usable), and reads the ACL back through PowerShell, which answers in ASCII so
+  the console code page cannot corrupt the verdict. If that cannot be done the tool warns
   once, and with `GMAIL_MCP_STRICT_PERMISSIONS=1` it refuses: `gmail-imap config`
   deletes the half-written file, and the audit write fails the send. If you
   would rather not keep the password in the JSON config, point
@@ -289,30 +291,31 @@ default branch can read Actions secrets.
 
 ## Status
 
-v0.1.6 stops trusting permission hardening: the ACL/mode is verified after it
-is applied, failures are reported instead of swallowed, and
-`GMAIL_MCP_STRICT_PERMISSIONS=1` makes them fatal. v0.1.5 made send state honest end to end: partial deliveries raise
-`PartialSendError` with `sent_to`/`refused`, and a mid-transfer SMTP failure
-raises `SendStateUnknownError` instead of a plain failure that invites a
-duplicate send. v0.1.4 fixed audit ordering: the intent record is written before SMTP, and a
-post-send audit failure is reported as "sent but unaudited" instead of a plain
-failure that invites a double send. v0.1.3 added owner-only credentials and audit files, `GMAIL_APP_PASSWORD_FILE`,
-`GMAIL_MCP_AUDIT_STRICT`, an optional `GMAIL_MCP_SCAN_CMD` scan hook that fails
-closed, and a nightly live workflow. v0.1.2 confined inbound attachment writes to a download allowlist with
-collision-safe filenames, fixes the Skill install line (the package is
-`gmail-imap-mcp`), adds security headers to attachment downloads, redacts the
-UI token from logs, and ships an opt-in live test suite.
-v0.1.1 fixed mailbox-scoped UID handling, hardened the web UI (Host/Origin/CSP)
-and added code-level send controls.
+- **0.1.7** — closed three holes in the 0.1.6 hardening: a duplicated
+  `_harden_dir` shadowed the verifying one, the Windows ACL check used locale
+  text mode and could raise `UnicodeDecodeError`, and protecting a folder
+  stripped its children's inherited ACEs.
+- **0.1.6** — permission hardening is verified instead of assumed; failures
+  warn once, or are fatal under `GMAIL_MCP_STRICT_PERMISSIONS=1`.
+- **0.1.5** — partial delivery (`PartialSendError`) and unknown send state
+  (`SendStateUnknownError`) are reported accurately.
+- **0.1.4** — the audit intent record is written before SMTP; a post-send audit
+  failure says "sent, do not retry".
+- **0.1.3** — owner-only credentials and audit files,
+  `GMAIL_APP_PASSWORD_FILE`, `GMAIL_MCP_AUDIT_STRICT`, the optional
+  `GMAIL_MCP_SCAN_CMD` hook, and a nightly live workflow.
+- **0.1.2** — inbound attachments confined to a download allowlist, security
+  headers on attachment downloads, token redaction, opt-in live suite.
 
 Working and dogfooded against a real personal Gmail account: search, read,
 attachments, send, reply, web UI. The offline suite covers IMAP FETCH/SEARCH
 fixtures, message construction and threading, attachment saving, UID/mailbox
-resolution, the send policy and audit log, web token/Host/Origin/CSP, and the
-MCP tool schema. The real mailbox is exercised by an opt-in live suite:
-`GMAIL_IMAP_LIVE=1 python -m unittest tests.test_live` covers login, labels,
-search, read by uid and by msgid, attachment fetch and a dry-run send. Not
-covered yet: draft editing, filters, Gmail settings (IMAP cannot do these).
+resolution, the send policy and audit log, permission hardening, the web
+token/Host/Origin/CSP, and the MCP tool schema. The real mailbox is exercised by
+an opt-in live suite: `GMAIL_IMAP_LIVE=1 python -m unittest tests.test_live`
+covers login, labels, search, read by uid and by msgid, attachment fetch and a
+dry-run send. Not covered yet: draft editing, filters, Gmail settings (IMAP
+cannot do these).
 
 Issues and PRs welcome. Please open an issue before large changes.
 

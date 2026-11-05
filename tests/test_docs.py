@@ -1,4 +1,5 @@
 """Packaging docs must name the package that actually exists on the index."""
+import ast
 import unittest
 from pathlib import Path
 
@@ -30,6 +31,22 @@ class InstallCommandTests(unittest.TestCase):
         for line in skill.splitlines():
             if "--save-attachments" in line:
                 self.assertIn("Downloads/gmail-imap", line)
+
+
+class SourceHygieneTests(unittest.TestCase):
+    def test_no_duplicate_top_level_definitions(self):
+        """A second definition silently shadows the first - catch it in CI."""
+        package = ROOT / "src" / "gmail_imap_mcp"
+        files = list(package.rglob("*.py"))
+        self.assertTrue(files)
+        for path in files:
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            names = [
+                node.name for node in tree.body
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+            ]
+            duplicates = sorted({name for name in names if names.count(name) > 1})
+            self.assertEqual(duplicates, [], f"{path.name}: {duplicates}")
 
 
 if __name__ == "__main__":

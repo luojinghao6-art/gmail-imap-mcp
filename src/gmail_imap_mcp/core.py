@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 import html as html_mod
 import imaplib
 import json
+import locale
 import mimetypes
 import os
 import re
@@ -233,73 +234,83 @@ def _harden_failed(path: Path, reason: str) -> None:
         print(f"warning: {message}", file=sys.stderr)
 
 
-def _windows_principals() -> set[str]:
-    """Names and SID that identify the current user in an ACL."""
-    names: set[str] = set()
-    user = os.environ.get("USERNAME", "")
-    if user:
-        names.add(user.lower())
-        for scope in ("USERDOMAIN", "COMPUTERNAME"):
-            value = os.environ.get(scope, "")
-            if value:
-                names.add((value + chr(92) + user).lower())
+def _decode_output(raw: bytes | None) -> str:
+    """Decode subprocess output without trusting the console code page."""
+    if not raw:
+        return ""
+    for encoding in ("utf-8", locale.getpreferredencoding(False), "mbcs"):
+        try:
+            return raw.decode(encoding)
+        except (UnicodeDecodeError, LookupError):
+            continue
+    return raw.decode("utf-8", errors="replace")
+
+
+_PS_ACL_CHECK = (
+    "$ErrorActionPreference='Stop';"
+    "$me=[System.Security.Principal.WindowsIdentity]::GetCurrent().Name;"
+    "$aces=@((Get-Acl -LiteralPath $env:GMAIL_HARDEN_PATH).Access | "
+    "ForEach-Object { $_.IdentityReference.Value });"
+    "$others=@($aces | Where-Object { $_ -ne $me });"
+    "if ($aces.Count -gt 0 -and $others.Count -eq 0) { 'PRIVATE' } else { 'OPEN' }"
+)
+
+
+def _windows_acl_private(path: Path) -> bool:
+    """True when the file or folder's ACL names only the current user.
+
+    PowerShell reads the ACL and prints an ASCII verdict, so neither the system
+    language nor the console code page can change the answer. Output stays in
+    bytes: text mode with a locale codec is what raised UnicodeDecodeError on
+    Chinese Windows.
+    """
+    env = dict(os.environ)
+    env["GMAIL_HARDEN_PATH"] = str(path)
     try:
         proc = subprocess.run(
-            ["whoami", "/user"], capture_output=True, text=True, timeout=10,
+            ["powershell", "-NoProfile", "-NonInteractive",
+             "-Command", _PS_ACL_CHECK],
+            capture_output=True, timeout=30, env=env,
         )
-        for token in re.findall(r"S-1-5-[0-9-]+", proc.stdout or ""):
-            names.add(token.lower())
-    except (OSError, subprocess.SubprocessError):
-        pass
-    return names
-
-
-def _windows_acl_private(path: Path, principals: set[str]) -> bool:
-    """True when every ACE on the file names the current user and nothing else."""
-    try:
-        proc = subprocess.run(
-            ["icacls", str(path)], capture_output=True, text=True, timeout=20,
-        )
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, subprocess.SubprocessError, ValueError):
         return False
-    if proc.returncode != 0:
-        return False
-    aces = [line for line in (proc.stdout or "").splitlines() if ":(" in line]
-    if not aces:
-        return False
-    for line in aces:
-        head = line.split(":(", 1)[0].strip()
-        principal = head.rsplit(" ", 1)[-1].strip().lower()
-        if principal not in principals:
-            return False
-    return True
+    return proc.returncode == 0 and b"PRIVATE" in (proc.stdout or b"")
 
 
-def _harden_windows(path: Path) -> tuple[bool, str]:
-    principals = _windows_principals()
+def _harden_windows(path: Path, directory: bool = False) -> tuple[bool, str]:
+    """Replace the DACL with a single grant for the current user.
+
+    `/inheritance:r` only drops inherited ACEs, so an explicitly granted group
+    (sandbox, corporate tooling) survived it - and Set-Acl needs
+    SeSecurityPrivilege when the object carries a SACL, which a normal user does
+    not have. So: /reset discards the explicit ACEs, /inheritance:r removes the
+    inherited ones, /grant:r adds ours, and PowerShell reads the result back as
+    an ASCII verdict.
+    """
     user = os.environ.get("USERNAME", "")
     domain = os.environ.get("USERDOMAIN", "")
-    candidates = [domain + chr(92) + user, user] if domain else [user]
-    reason = "icacls is unavailable"
-    for name in candidates:
-        if not name:
-            continue
+    name = domain + chr(92) + user if domain else user
+    if not name:
+        return False, "USERNAME is not set"
+    # A directory grant carries (OI)(CI) so its contents inherit the same
+    # access; without it, protecting the parent leaves children with an empty
+    # DACL and the owner is locked out of their own files.
+    rights = "(OI)(CI)F" if directory else "F"
+    steps = (
+        ["icacls", str(path), "/reset"],
+        ["icacls", str(path), "/inheritance:r", "/grant:r", f"{name}:{rights}"],
+    )
+    for argv in steps:
         try:
-            proc = subprocess.run(
-                ["icacls", str(path), "/inheritance:r", "/grant:r", f"{name}:F"],
-                capture_output=True, text=True, timeout=20,
-            )
-        except (OSError, subprocess.SubprocessError) as exc:
-            reason = str(exc)
-            continue
+            proc = subprocess.run(argv, capture_output=True, timeout=20)
+        except (OSError, subprocess.SubprocessError, ValueError) as exc:
+            return False, str(exc)
         if proc.returncode != 0:
-            reason = ((proc.stderr or proc.stdout or "").strip()
-                      or f"icacls exited {proc.returncode}")
-            continue
-        if _windows_acl_private(path, principals):
-            return True, ""
-        reason = "ACL still names other principals"
-    return False, reason
+            detail = _decode_output((proc.stderr or b"") + (proc.stdout or b"")).strip()
+            return False, detail or f"icacls exited {proc.returncode}"
+    if _windows_acl_private(path):
+        return True, ""
+    return False, "ACL still names other principals"
 
 
 def _harden_file(path: Path) -> bool:
@@ -326,9 +337,19 @@ def _harden_file(path: Path) -> bool:
 
 
 def _harden_dir(path: Path) -> bool:
-    """Restrict a directory on POSIX; Windows profile ACLs are left alone."""
+    """Restrict a directory to the current user, with the same checks as a file.
+
+    Cached: spawning PowerShell on every audit write would be absurd.
+    """
+    key = "dir:" + str(path)
+    if key in _hardened_paths:
+        return _hardened_paths[key]
     if os.name == "nt":
-        return True
+        ok, reason = _harden_windows(path, directory=True)
+        if not ok:
+            _harden_failed(path, reason)
+        _hardened_paths[key] = ok
+        return ok
     try:
         os.chmod(path, 0o700)
         mode = stat.S_IMODE(path.stat().st_mode)
@@ -338,15 +359,8 @@ def _harden_dir(path: Path) -> bool:
         ok, reason = False, str(exc)
     if not ok:
         _harden_failed(path, reason)
+    _hardened_paths[key] = ok
     return ok
-
-
-def _harden_dir(path: Path) -> None:
-    try:
-        if os.name != "nt":
-            os.chmod(path, 0o700)
-    except OSError:
-        pass
 
 
 def save_settings(address: str, app_password: str) -> Path:
