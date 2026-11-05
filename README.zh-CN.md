@@ -26,7 +26,7 @@
 
 ```bash
 # 先装 release 里的 wheel（PyPI 还没发）
-pip install "gmail-imap-mcp[mcp] @ https://github.com/luojinghao6-art/gmail-imap-mcp/releases/download/v0.1.1/gmail_imap_mcp-0.1.1-py3-none-any.whl"
+pip install "gmail-imap-mcp[mcp] @ https://github.com/luojinghao6-art/gmail-imap-mcp/releases/download/v0.1.2/gmail_imap_mcp-0.1.2-py3-none-any.whl"
 gmail-imap config                      # 粘贴 16 位应用专用密码
 ```
 
@@ -78,14 +78,14 @@ IMAP/SMTP 的标准认证方式。
 ## 安装
 
 ```bash
-# 从 v0.1.1 release 的 wheel 安装（不用 PyPI 账号）
-pip install "gmail-imap-mcp[mcp] @ https://github.com/luojinghao6-art/gmail-imap-mcp/releases/download/v0.1.1/gmail_imap_mcp-0.1.1-py3-none-any.whl"
+# 从 v0.1.2 release 的 wheel 安装（不用 PyPI 账号）
+pip install "gmail-imap-mcp[mcp] @ https://github.com/luojinghao6-art/gmail-imap-mcp/releases/download/v0.1.2/gmail_imap_mcp-0.1.2-py3-none-any.whl"
 
 # 或者直接从仓库装
 pip install "git+https://github.com/luojinghao6-art/gmail-imap-mcp.git#egg=gmail-imap-mcp[mcp]"
 
 # 只要 CLI，零依赖
-pip install "gmail-imap-mcp @ https://github.com/luojinghao6-art/gmail-imap-mcp/releases/download/v0.1.1/gmail_imap_mcp-0.1.1-py3-none-any.whl"
+pip install "gmail-imap-mcp @ https://github.com/luojinghao6-art/gmail-imap-mcp/releases/download/v0.1.2/gmail_imap_mcp-0.1.2-py3-none-any.whl"
 ```
 
 等发到 PyPI 之后，短写法也能用：`pip install "gmail-imap-mcp[mcp]"`。
@@ -188,7 +188,7 @@ gmail-imap-ui --port 9000 --no-browser
 ```bash
 gmail-imap status
 gmail-imap search --query "from:boss newer_than:7d" --limit 10
-gmail-imap read --uid 12345 --mailbox "INBOX" --save-attachments ./附件
+gmail-imap read --uid 12345 --mailbox "INBOX" --save-attachments "~/Downloads/gmail-imap"
 gmail-imap read --msgid 1278455344230334865
 gmail-imap send --to a@b.com --subject "标题" --body "正文"
 gmail-imap send --to a@b.com --subject "周报" --body "见附件" --attach 周报.pdf --dry-run
@@ -221,6 +221,17 @@ gmail-imap labels
 | 始终生效 | 凭据类文件（`.credentials.json`、`.env*`、`*.pem`、`*.key`、`id_rsa`）、凭据文件本身、审计日志，以及 `.ssh` 下的文件，一律拒绝发送 |
 | 始终生效 | 每次发信、回复、被拦截的尝试都写一行 JSON 到凭据旁边的 `audit.log` |
 
+### 代码层面的收件附件约束
+
+附件是**别人发来的**，写入方向同样锁死：
+
+| 开关 | 作用 |
+|---|---|
+| `GMAIL_MCP_DOWNLOAD_DIRS=/路径/a:/路径/b` | 额外允许保存收件附件的目录；`~/Downloads/gmail-imap` 始终允许 |
+| 始终生效 | `gmail_download_attachment`、`save_attachments_to` 拒绝这些根之外的任何目录 |
+| 始终生效 | 发件人给的文件名被压成单个路径片段：分隔符替换、`.`/`..` 不可能存在、Windows 设备名加前缀、超长截断 |
+| 始终生效 | 已存在的文件绝不覆盖，自动加 `_1`、`_2` 后缀 |
+
 ## 排障
 
 | 现象 | 原因 |
@@ -236,7 +247,9 @@ gmail-imap labels
 已在真实个人 Gmail 账号上跑通：搜索、阅读、附件、发信、回复、Web UI。
 离线测试覆盖 IMAP FETCH/SEARCH 响应、邮件构造与会话头、附件存盘、UID/邮箱解析、
 发信策略与审计日志、Web 的 token/Host/Origin/CSP，以及 MCP 工具 schema。
-还没做：草稿编辑、过滤器、Gmail 设置（IMAP 干不了这些），以及针对真实邮箱的测试。
+真实邮箱另有可选集成测试：`GMAIL_IMAP_LIVE=1 python -m unittest tests.test_live`
+覆盖登录、标签、搜索、按 uid 和按 msgid 读信、取附件、dry-run 发信。
+还没做：草稿编辑、过滤器、Gmail 设置（IMAP 干不了这些）。
 
 欢迎提 issue 和 PR。大改动请先开 issue 聊。
 

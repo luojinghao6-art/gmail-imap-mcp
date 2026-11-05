@@ -230,11 +230,23 @@ def request_origin_allowed(headers, port: int) -> bool:
     return origin_allowed(headers.get("Referer"), port)
 
 
+TOKEN_IN_QUERY = re.compile(r"([?&]t=)[^&\s\"']+")
+
+
+def redact_token(line: str) -> str:
+    """Drop the page token from anything headed for stderr."""
+    return TOKEN_IN_QUERY.sub(r"\1***", line)
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "gmail-imap-ui/0.1"
 
     def log_message(self, fmt, *args):
-        sys.stderr.write(f"[{time.strftime('%H:%M:%S')}] {fmt % args}\n")
+        try:
+            line = fmt % args
+        except (TypeError, ValueError):
+            line = str(fmt)
+        sys.stderr.write(f"[{time.strftime('%H:%M:%S')}] {redact_token(line)}\n")
 
     def _json(self, obj: Any, status: int = 200) -> None:
         data = json.dumps(obj, ensure_ascii=False, default=str).encode("utf-8")
@@ -340,6 +352,7 @@ class Handler(BaseHTTPRequestHandler):
                     "attachment; filename*=UTF-8''" + quote(filename),
                 )
                 self.send_header("Cache-Control", "no-store")
+                self._security_headers()
                 self.end_headers()
                 self.wfile.write(blob)
                 return

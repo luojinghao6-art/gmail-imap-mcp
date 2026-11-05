@@ -27,7 +27,7 @@ Ships three front-ends over one core:
 
 ```bash
 # install the release wheel (PyPI publication is pending)
-pip install "gmail-imap-mcp[mcp] @ https://github.com/luojinghao6-art/gmail-imap-mcp/releases/download/v0.1.1/gmail_imap_mcp-0.1.1-py3-none-any.whl"
+pip install "gmail-imap-mcp[mcp] @ https://github.com/luojinghao6-art/gmail-imap-mcp/releases/download/v0.1.2/gmail_imap_mcp-0.1.2-py3-none-any.whl"
 gmail-imap config                      # paste a Google App Password (16 chars)
 ```
 
@@ -83,14 +83,14 @@ you need those, use a Gmail API server.
 ## Install
 
 ```bash
-# from the v0.1.1 release wheel (no PyPI account needed)
-pip install "gmail-imap-mcp[mcp] @ https://github.com/luojinghao6-art/gmail-imap-mcp/releases/download/v0.1.1/gmail_imap_mcp-0.1.1-py3-none-any.whl"
+# from the v0.1.2 release wheel (no PyPI account needed)
+pip install "gmail-imap-mcp[mcp] @ https://github.com/luojinghao6-art/gmail-imap-mcp/releases/download/v0.1.2/gmail_imap_mcp-0.1.2-py3-none-any.whl"
 
 # or straight from the repo
 pip install "git+https://github.com/luojinghao6-art/gmail-imap-mcp.git#egg=gmail-imap-mcp[mcp]"
 
 # CLI only, zero dependencies
-pip install "gmail-imap-mcp @ https://github.com/luojinghao6-art/gmail-imap-mcp/releases/download/v0.1.1/gmail_imap_mcp-0.1.1-py3-none-any.whl"
+pip install "gmail-imap-mcp @ https://github.com/luojinghao6-art/gmail-imap-mcp/releases/download/v0.1.2/gmail_imap_mcp-0.1.2-py3-none-any.whl"
 ```
 
 Once the package is on PyPI, the short form works too:
@@ -198,7 +198,7 @@ All Mail. `msgid` is account-wide and never has that problem.
 ```bash
 gmail-imap status
 gmail-imap search --query "from:boss newer_than:7d" --limit 10
-gmail-imap read --uid 12345 --mailbox "INBOX" --save-attachments ./attachments
+gmail-imap read --uid 12345 --mailbox "INBOX" --save-attachments "~/Downloads/gmail-imap"
 gmail-imap read --msgid 1278455344230334865
 gmail-imap send --to a@b.com --subject "Hi" --body "Hello"
 gmail-imap send --to a@b.com --subject "Report" --body "See attached" --attach report.pdf --dry-run
@@ -236,6 +236,17 @@ Prompt instructions are a suggestion; these are enforced in
 | always on | Files that look like credentials (`.credentials.json`, `.env*`, `*.pem`, `*.key`, `id_rsa`), the credentials file itself, the audit log, and anything under `.ssh` are refused as attachments |
 | always on | Every send, reply and blocked attempt is appended as JSON to `audit.log` next to the credentials file |
 
+### Code-level download controls
+
+Attachments come *from* strangers, so inbound writes are constrained as well:
+
+| Control | Effect |
+|---|---|
+| `GMAIL_MCP_DOWNLOAD_DIRS=/path/a:/path/b` | Extra folders inbound attachments may be saved to. `~/Downloads/gmail-imap` is always allowed |
+| always on | `gmail_download_attachment` and `save_attachments_to` refuse any directory outside those roots |
+| always on | Sender-supplied filenames are reduced to one path component: separators replaced, `.`/`..` impossible, Windows device names prefixed, length clipped |
+| always on | An existing file is never overwritten — a `_1`, `_2` … suffix is added instead |
+
 ## Troubleshooting
 
 | Symptom | Cause |
@@ -248,15 +259,21 @@ Prompt instructions are a suggestion; these are enforced in
 
 ## Status
 
-v0.1.1 fixes mailbox-scoped UID handling, hardens the web UI (Host/Origin/
-CSP) and adds code-level send controls — see the release notes.
+v0.1.2 confines inbound attachment writes to a download allowlist with
+collision-safe filenames, fixes the Skill install line (the package is
+`gmail-imap-mcp`), adds security headers to attachment downloads, redacts the
+UI token from logs, and ships an opt-in live test suite.
+v0.1.1 fixed mailbox-scoped UID handling, hardened the web UI (Host/Origin/CSP)
+and added code-level send controls.
 
 Working and dogfooded against a real personal Gmail account: search, read,
 attachments, send, reply, web UI. The offline suite covers IMAP FETCH/SEARCH
 fixtures, message construction and threading, attachment saving, UID/mailbox
 resolution, the send policy and audit log, web token/Host/Origin/CSP, and the
-MCP tool schema. Not covered yet: draft editing, filters, Gmail settings (IMAP
-cannot do these), and tests against a live mailbox.
+MCP tool schema. The real mailbox is exercised by an opt-in live suite:
+`GMAIL_IMAP_LIVE=1 python -m unittest tests.test_live` covers login, labels,
+search, read by uid and by msgid, attachment fetch and a dry-run send. Not
+covered yet: draft editing, filters, Gmail settings (IMAP cannot do these).
 
 Issues and PRs welcome. Please open an issue before large changes.
 

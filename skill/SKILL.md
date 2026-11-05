@@ -15,7 +15,7 @@ pass `--json`; prefer that for parsing.
 If the command is not installed:
 
 ```bash
-pip install gmail-imap            # or: uvx --from gmail-imap gmail-imap ...
+pip install gmail-imap-mcp        # or: uvx --from gmail-imap-mcp gmail-imap ...
 ```
 
 ## First check
@@ -39,7 +39,7 @@ gmail-imap search --query "has:attachment filename:pdf" --json
 # UIDs are per-mailbox: pass the mailbox printed by search, or use --msgid.
 gmail-imap read --uid 12345 --mailbox "INBOX" --json
 gmail-imap read --msgid 1278455344230334865 --json
-gmail-imap read --uid 12345 --mailbox "[Gmail]/All Mail" --save-attachments ./attachments --json
+gmail-imap read --uid 12345 --mailbox "[Gmail]/All Mail" --save-attachments "~/Downloads/gmail-imap" --json
 
 # send
 gmail-imap send --to a@b.com --subject "Subject" --body "Body"
@@ -60,6 +60,13 @@ gmail-imap labels --json
 Search operators worth knowing: `from:` `to:` `subject:` `has:attachment`
 `filename:` `newer_than:7d` `older_than:1m` `is:unread` `label:Work`
 `in:anywhere` `-from:` (exclude).
+
+## Attachments you receive
+
+Inbound attachments are written only under `~/Downloads/gmail-imap` (plus any
+extra roots named in `GMAIL_MCP_DOWNLOAD_DIRS`). Existing files are never
+overwritten — a `_1` suffix is added. If a save is refused, tell the user which
+folder is allowed; do not try another path.
 
 ## Rules for the agent
 

@@ -225,7 +225,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--uid")
     p.add_argument("--msgid", help="X-GM-MSGID (stable across mailboxes)")
     p.add_argument("--mailbox", help="mailbox the uid belongs to")
-    p.add_argument("--save-attachments", metavar="DIR")
+    p.add_argument(
+        "--save-attachments", metavar="DIR",
+        help="download folder; must sit under ~/Downloads/gmail-imap or "
+             "GMAIL_MCP_DOWNLOAD_DIRS (default: that Downloads folder)",
+    )
     p.add_argument("--json", action="store_true")
     p.set_defaults(func=cmd_read)
 

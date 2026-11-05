@@ -133,6 +133,36 @@ class WebTests(unittest.TestCase):
         status, _, _ = self.request("GET", self.token_path("/api/nope"))
         self.assertEqual(status, 404)
 
+    # -- attachments ------------------------------------------------------
+    def test_attachment_response_carries_security_headers(self):
+        fake = ("a.txt", "text/plain", b"hi")
+        with mock.patch.object(
+            web, "get_attachment",
+            lambda uid, idx, mailbox=None, msgid=None: fake,
+        ):
+            status, headers, body = self.request(
+                "GET", self.token_path("/api/attachment?uid=1&idx=0")
+            )
+        self.assertEqual(status, 200)
+        self.assertEqual(body, b"hi")
+        self.assertEqual(headers.get("X-Content-Type-Options"), "nosniff")
+        self.assertEqual(headers.get("X-Frame-Options"), "DENY")
+        self.assertEqual(headers.get("Referrer-Policy"), "no-referrer")
+        self.assertIn("attachment;", headers.get("Content-Disposition", ""))
+
+    def test_token_redacted_before_logging(self):
+        line = web.redact_token(
+            '"GET /api/attachment?uid=1&t=%s HTTP/1.1" 200 -' % web.TOKEN
+        )
+        self.assertNotIn(web.TOKEN, line)
+        self.assertIn("t=***", line)
+
+    def test_redaction_keeps_other_params(self):
+        line = web.redact_token("GET /api/message?uid=42&t=secret&idx=1 HTTP/1.1")
+        self.assertIn("uid=42", line)
+        self.assertIn("idx=1", line)
+        self.assertNotIn("secret", line)
+
 
 if __name__ == "__main__":
     unittest.main()

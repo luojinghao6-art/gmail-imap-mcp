@@ -9,7 +9,6 @@ interfaces.
 from __future__ import annotations
 
 import base64
-import hashlib
 from datetime import datetime, timezone
 import html as html_mod
 import imaplib
@@ -43,6 +42,9 @@ __all__ = [
     "is_read_only",
     "audit_log_path",
     "resolve_attachment",
+    "default_download_dir",
+    "resolve_download_dir",
+    "write_attachment",
 ]
 
 APP_NAME = "gmail-imap-mcp"
@@ -56,6 +58,7 @@ DEFAULT_TIMEOUT = 45
 # CLI and a shared deployment without forking behaviour.
 READ_ONLY_ENV = "GMAIL_MCP_READ_ONLY"
 ATTACHMENT_DIRS_ENV = "GMAIL_MCP_ATTACHMENT_DIRS"
+DOWNLOAD_DIRS_ENV = "GMAIL_MCP_DOWNLOAD_DIRS"
 
 HEADER_SPEC = (
     "(UID RFC822.SIZE FLAGS X-GM-MSGID X-GM-LABELS "
@@ -255,6 +258,67 @@ def resolve_attachment(raw: str) -> Path:
             )
     if _looks_secret(resolved):
         raise GmailError(f"Refusing to send a credential or secret file: {resolved}")
+    return resolved
+
+
+# ---------------------------------------------------------------- downloads
+
+def default_download_dir() -> Path:
+    """Where inbound attachments go when no directory is named."""
+    return Path.home() / "Downloads" / APP_NAME
+
+
+def _allowed_download_roots() -> list[Path]:
+    """The default download folder plus anything in GMAIL_MCP_DOWNLOAD_DIRS."""
+    raw = [str(default_download_dir())]
+    raw.extend(
+        chunk for chunk in os.environ.get(DOWNLOAD_DIRS_ENV, "").split(os.pathsep)
+        if chunk.strip()
+    )
+    roots: list[Path] = []
+    for item in raw:
+        try:
+            resolved = Path(item.strip()).expanduser().resolve()
+        except OSError:
+            continue
+        if resolved not in roots:
+            roots.append(resolved)
+    return roots
+
+
+def resolve_download_dir(raw: str | Path | None = None) -> Path:
+    """Validate and create a directory for inbound attachments.
+
+    Mail is untrusted input, so an agent must never be talked into writing a
+    payload into an autostart folder: inbound files are confined to
+    ``~/Downloads/gmail-imap`` plus the roots named in
+    ``GMAIL_MCP_DOWNLOAD_DIRS`` (``os.pathsep``-separated).
+    """
+    target = default_download_dir() if raw in (None, "") else Path(raw).expanduser()
+    if not target.is_absolute():
+        target = Path.cwd() / target
+    try:
+        resolved = target.resolve()
+    except OSError as exc:
+        raise GmailError(f"Cannot use {target}: {exc}") from exc
+
+    roots = _allowed_download_roots()
+    for root in roots:
+        if resolved == root or root in resolved.parents:
+            break
+    else:
+        allowed = ", ".join(str(r) for r in roots)
+        raise GmailError(
+            f"Refusing to save attachments outside the download folders: {resolved}. "
+            f"Allowed: {allowed}. Set {DOWNLOAD_DIRS_ENV} to add a folder."
+        )
+
+    if resolved.exists() and not resolved.is_dir():
+        raise GmailError(f"Not a directory: {resolved}")
+    try:
+        resolved.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise GmailError(f"Cannot create {resolved}: {exc}") from exc
     return resolved
 
 
@@ -977,9 +1041,31 @@ def _address_of(header: str) -> str:
     return (match.group(1) if match else (header or "")).strip()
 
 
+_RESERVED_NAMES = {
+    "con", "prn", "aux", "nul",
+    *(f"com{i}" for i in range(1, 10)),
+    *(f"lpt{i}" for i in range(1, 10)),
+}
+
+
 def _safe_filename(name: str) -> str:
-    cleaned = re.sub(r'[\\/:*?"<>|\x00-\x1f]', "_", name).strip()
-    return cleaned or "attachment.bin"
+    """Turn a sender-supplied filename into one bare, writable path part.
+
+    Separators and control characters are replaced, `.`/`..` cannot survive,
+    Windows device names get a prefix, and the result is clipped so the OS
+    still accepts it.
+    """
+    cleaned = re.sub(r'[\\/:*?"<>|\x00-\x1f]', "_", name or "")
+    cleaned = cleaned.strip().strip(".").strip()
+    if not cleaned or set(cleaned) <= {"_"}:
+        return "attachment.bin"
+    stem, dot, suffix = cleaned.rpartition(".")
+    if not dot or not stem:
+        stem, suffix = cleaned, ""
+    if stem.lower() in _RESERVED_NAMES:
+        stem = "_" + stem
+    suffix = suffix[:20]
+    return (stem[:120] + ("." + suffix if suffix else "")) or "attachment.bin"
 
 
 def _extract_body(msg) -> tuple[str, str]:
@@ -1029,18 +1115,47 @@ def _attachment_meta(msg) -> list[dict[str, Any]]:
     return rows
 
 
+def _free_path(out_dir: Path, name: str) -> Path:
+    """First unused ``name``, ``name_1``, ``name_2`` … inside out_dir."""
+    target = out_dir / name
+    if not target.exists() and not target.is_symlink():
+        return target
+    stem, suffix = Path(name).stem, Path(name).suffix
+    for counter in range(1, 10000):
+        candidate = out_dir / f"{stem}_{counter}{suffix}"
+        if not candidate.exists() and not candidate.is_symlink():
+            return candidate
+    raise GmailError(f"Too many files named like {name} in {out_dir}")
+
+
+def write_attachment(out_dir: Path, name: str, blob: bytes) -> Path:
+    """Write one inbound attachment without clobbering an existing file.
+
+    The file is opened with ``O_EXCL`` semantics ("xb"), so even a file that
+    appears between the name check and the write cannot be overwritten.
+    """
+    out_dir = resolve_download_dir(out_dir)
+    safe = _safe_filename(decode_mime(name))
+    target = _free_path(out_dir, safe)
+    try:
+        with open(target, "xb") as fh:
+            fh.write(blob)
+    except FileExistsError:
+        target = _free_path(out_dir, safe)
+        with open(target, "xb") as fh:
+            fh.write(blob)
+    return target
+
+
 def _save_attachments(msg, out_dir: Path) -> list[str]:
-    out_dir.mkdir(parents=True, exist_ok=True)
+    out_dir = resolve_download_dir(out_dir)
     saved = []
     for part in msg.walk():
         filename = part.get_filename()
         if not filename:
             continue
-        name = _safe_filename(decode_mime(filename))
-        target = out_dir / name
-        if target.exists():
-            digest = hashlib.md5(name.encode("utf-8")).hexdigest()[:6]
-            target = out_dir / f"{target.stem}_{digest}{target.suffix}"
-        target.write_bytes(part.get_payload(decode=True) or b"")
+        target = write_attachment(
+            out_dir, filename, part.get_payload(decode=True) or b""
+        )
         saved.append(str(target))
     return saved
