@@ -6,9 +6,12 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from gmail_imap_mcp import core
 from gmail_imap_mcp.core import (
+    AuditError,
     GmailError,
     MailClient,
+    SentButUnauditedError,
     Settings,
     audit_log_path,
 )
@@ -137,6 +140,54 @@ class SendTests(unittest.TestCase):
         row = self.audit_rows()[-1]
         self.assertEqual(row["event"], "send_error")
         self.assertIn("refused", row["error"])
+
+
+    # -- audit ordering ---------------------------------------------------
+    def test_intent_is_recorded_before_smtp(self):
+        seen = {}
+
+        def fake_smtp(msg, recipients):
+            seen["events"] = [row["event"] for row in self.audit_rows()]
+            return {}
+
+        self.client._smtp_send = fake_smtp
+        self.client.send(["a@b.com"], "s", "b")
+        self.assertIn("send_intent", seen["events"])
+        self.assertEqual([row["event"] for row in self.audit_rows()],
+                         ["send_intent", "send"])
+
+    def test_strict_audit_failure_stops_before_smtp(self):
+        with mock.patch.dict(os.environ, {"GMAIL_MCP_AUDIT_STRICT": "1"}):
+            with mock.patch("gmail_imap_mcp.core._audit",
+                            side_effect=AuditError("disk full")):
+                with self.assertRaises(AuditError):
+                    self.client.send(["a@b.com"], "s", "b")
+        self.assertEqual(self.sent, [])
+
+    def test_audit_failure_after_send_is_reported_as_sent(self):
+        calls = {"n": 0}
+        real = core._audit
+
+        def flaky(event, **fields):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return real(event, **fields)
+            raise AuditError("disk full")
+
+        with mock.patch("gmail_imap_mcp.core._audit", side_effect=flaky):
+            with self.assertRaises(SentButUnauditedError) as ctx:
+                self.client.send(["a@b.com"], "s", "b")
+        self.assertEqual(len(self.sent), 1)
+        self.assertIn("WAS sent", str(ctx.exception))
+
+    def test_read_only_message_survives_an_audit_failure(self):
+        with mock.patch.dict(os.environ, {"GMAIL_MCP_READ_ONLY": "1"}):
+            with mock.patch("gmail_imap_mcp.core._audit",
+                            side_effect=AuditError("disk full")):
+                with self.assertRaises(GmailError) as ctx:
+                    self.client.send(["a@b.com"], "s", "b")
+        self.assertIn("GMAIL_MCP_READ_ONLY", str(ctx.exception))
+        self.assertEqual(self.sent, [])
 
 
 class ReplyTests(unittest.TestCase):

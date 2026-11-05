@@ -97,6 +97,7 @@ deleted if flagged; a scan that cannot run also deletes it.
 | `535` / username and password not accepted | Wrong or revoked App Password (16 chars) |
 | Timeout | Gmail unreachable; try `GMAIL_PROXY=socks5://127.0.0.1:7890` |
 | Empty search that should match | Add `in:anywhere`; the default scope is All Mail |
+| `SentButUnauditedError` / "the mail WAS sent" | The message left the account; the audit write failed afterwards. Do not resend — check the Sent folder first |
 
 ## Limits
 

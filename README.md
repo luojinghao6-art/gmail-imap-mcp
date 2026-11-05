@@ -27,7 +27,7 @@ Ships three front-ends over one core:
 
 ```bash
 # install the release wheel (PyPI publication is pending)
-pip install "gmail-imap-mcp[mcp] @ https://github.com/luojinghao6-art/gmail-imap-mcp/releases/download/v0.1.3/gmail_imap_mcp-0.1.3-py3-none-any.whl"
+pip install "gmail-imap-mcp[mcp] @ https://github.com/luojinghao6-art/gmail-imap-mcp/releases/download/v0.1.4/gmail_imap_mcp-0.1.4-py3-none-any.whl"
 gmail-imap config                      # paste a Google App Password (16 chars)
 ```
 
@@ -83,14 +83,14 @@ you need those, use a Gmail API server.
 ## Install
 
 ```bash
-# from the v0.1.3 release wheel (no PyPI account needed)
-pip install "gmail-imap-mcp[mcp] @ https://github.com/luojinghao6-art/gmail-imap-mcp/releases/download/v0.1.3/gmail_imap_mcp-0.1.3-py3-none-any.whl"
+# from the v0.1.4 release wheel (no PyPI account needed)
+pip install "gmail-imap-mcp[mcp] @ https://github.com/luojinghao6-art/gmail-imap-mcp/releases/download/v0.1.4/gmail_imap_mcp-0.1.4-py3-none-any.whl"
 
 # or straight from the repo
 pip install "git+https://github.com/luojinghao6-art/gmail-imap-mcp.git#egg=gmail-imap-mcp[mcp]"
 
 # CLI only, zero dependencies
-pip install "gmail-imap-mcp @ https://github.com/luojinghao6-art/gmail-imap-mcp/releases/download/v0.1.3/gmail_imap_mcp-0.1.3-py3-none-any.whl"
+pip install "gmail-imap-mcp @ https://github.com/luojinghao6-art/gmail-imap-mcp/releases/download/v0.1.4/gmail_imap_mcp-0.1.4-py3-none-any.whl"
 ```
 
 Once the package is on PyPI, the short form works too:
@@ -246,6 +246,7 @@ Prompt instructions are a suggestion; these are enforced in
 | `GMAIL_MCP_ATTACHMENT_DIRS=/path/a:/path/b` | Attachments must resolve inside one of these roots (`os.pathsep`-separated) |
 | always on | Files that look like credentials (`.credentials.json`, `.env*`, `*.pem`, `*.key`, `id_rsa`), the credentials file itself, the audit log, and anything under `.ssh` are refused as attachments |
 | always on | Every send, reply and blocked attempt is appended as JSON to `audit.log` next to the credentials file |
+| always on | Each send is recorded twice: `send_intent` before SMTP and `send`/`reply` after. The trail exists before the message can leave |
 
 ### Code-level download controls
 
@@ -258,7 +259,7 @@ Attachments come *from* strangers, so inbound writes are constrained as well:
 | always on | Sender-supplied filenames are reduced to one path component: separators replaced, `.`/`..` impossible, Windows device names prefixed, length clipped |
 | always on | An existing file is never overwritten — a `_1`, `_2` … suffix is added instead |
 | `GMAIL_MCP_SCAN_CMD="clamdscan --no-summary {}"` | Run this command on every saved attachment. Exit 0 keeps the file; any other exit, or a scanner that cannot run, deletes it and fails the call |
-| `GMAIL_MCP_AUDIT_STRICT=1` | A failed audit write aborts the send instead of warning once on stderr |
+| `GMAIL_MCP_AUDIT_STRICT=1` | Writes a `send_intent` record before SMTP; a failed write aborts the send, so nothing leaves the machine. If the post-send record fails instead, the call raises `SentButUnauditedError` — "WAS sent, check the Sent folder before retrying" — rather than looking like a failed send |
 | `GMAIL_APP_PASSWORD_FILE=/run/secrets/gmail` | Read the App Password from a file instead of the JSON config |
 
 ## Troubleshooting
@@ -281,7 +282,9 @@ default branch can read Actions secrets.
 
 ## Status
 
-v0.1.3 adds owner-only credentials and audit files, `GMAIL_APP_PASSWORD_FILE`,
+v0.1.4 fixes audit ordering: the intent record is written before SMTP, and a
+post-send audit failure is reported as "sent but unaudited" instead of a plain
+failure that invites a double send. v0.1.3 added owner-only credentials and audit files, `GMAIL_APP_PASSWORD_FILE`,
 `GMAIL_MCP_AUDIT_STRICT`, an optional `GMAIL_MCP_SCAN_CMD` scan hook that fails
 closed, and a nightly live workflow. v0.1.2 confined inbound attachment writes to a download allowlist with
 collision-safe filenames, fixes the Skill install line (the package is

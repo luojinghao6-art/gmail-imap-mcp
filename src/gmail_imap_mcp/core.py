@@ -33,6 +33,8 @@ from typing import Any, Iterable, Sequence
 __all__ = [
     "GmailError",
     "AuthError",
+    "AuditError",
+    "SentButUnauditedError",
     "MailClient",
     "Settings",
     "load_settings",
@@ -80,6 +82,22 @@ class GmailError(Exception):
 
 class AuthError(GmailError):
     """Bad App Password, or 2-Step Verification is off."""
+
+
+class AuditError(GmailError):
+    """The audit log could not be written.
+
+    With GMAIL_MCP_AUDIT_STRICT=1 this is raised before SMTP, so nothing was
+    sent. After SMTP it is re-raised as SentButUnauditedError.
+    """
+
+
+class SentButUnauditedError(AuditError):
+    """The message went out, but its completion record could not be written.
+
+    Distinct from AuditError on purpose: retrying a plain "audit failed" would
+    send the message twice.
+    """
 
 
 # ---------------------------------------------------------------- settings
@@ -268,7 +286,7 @@ def _audit(event: str, **fields: Any) -> None:
         _harden_once(path)
     except OSError as exc:
         if os.environ.get(AUDIT_STRICT_ENV, "").strip().lower() in _TRUE_VALUES:
-            raise GmailError(
+            raise AuditError(
                 f"Cannot write the audit log {path}: {exc}. Refusing to continue "
                 f"because {AUDIT_STRICT_ENV} is set."
             ) from exc
@@ -277,9 +295,17 @@ def _audit(event: str, **fields: Any) -> None:
             print(f"warning: cannot write audit log {path}: {exc}", file=sys.stderr)
 
 
+def _audit_quietly(event: str, **fields: Any) -> None:
+    """Record something without letting an audit failure mask the real error."""
+    try:
+        _audit(event, **fields)
+    except AuditError:
+        pass
+
+
 def _ensure_writable(action: str) -> None:
     if is_read_only():
-        _audit("blocked", action=action, reason=READ_ONLY_ENV)
+        _audit_quietly("blocked", action=action, reason=READ_ONLY_ENV)
         raise GmailError(
             f"{action} is disabled because {READ_ONLY_ENV} is set. "
             "Unset it to allow outbound mail."
@@ -965,20 +991,37 @@ class MailClient:
         if reply_to_uid or reply_msgid:
             self._apply_threading(msg, reply_to_uid, reply_mailbox, reply_msgid)
 
+        record: dict[str, Any] = {
+            "to": to_list,
+            "cc": cc_list,
+            "bcc": bcc_list,
+            "subject": subject,
+            "message_id": str(msg["Message-ID"]),
+            "attachments": [p.name for p in paths],
+            "reply_to": reply_msgid or reply_to_uid or None,
+        }
+        # The intent record goes to disk before SMTP. Under strict audit a
+        # failure here aborts the send, and nothing has left the machine yet.
+        _audit("send_intent", action=action, **record)
+
         try:
             refused = self._smtp_send(msg, recipients)
         except GmailError as exc:
-            _audit("send_error", action=action, to=recipients, subject=subject,
-                   error=str(exc))
+            _audit_quietly("send_error", action=action, error=str(exc), **record)
             raise
         if refused:
-            _audit("send_error", action=action, to=recipients, subject=subject,
-                   error=f"refused: {refused}")
+            _audit_quietly("send_error", action=action,
+                           error=f"refused: {refused}", **record)
             raise GmailError(f"Recipients refused: {refused}")
-        _audit(action, to=to_list, cc=cc_list, bcc=bcc_list, subject=subject,
-               message_id=str(msg["Message-ID"]),
-               attachments=[p.name for p in paths],
-               reply_to=reply_msgid or reply_to_uid or None)
+
+        try:
+            _audit(action, **record)
+        except AuditError as exc:
+            raise SentButUnauditedError(
+                f"{action} went out (Message-ID {record['message_id']}) but the "
+                f"audit log could not record it: {exc}. The mail WAS sent - check "
+                f"the Sent folder before retrying."
+            ) from exc
         return {
             "ok": True,
             "message_id": msg["Message-ID"],

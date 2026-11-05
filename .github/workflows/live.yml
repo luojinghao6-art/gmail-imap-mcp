@@ -28,6 +28,7 @@ jobs:
             echo "HAVE_CREDS=1" >> "$GITHUB_ENV"
           else
             echo "No GMAIL_APP_PASSWORD secret; live tests skipped."
+            echo "::warning title=Live tests skipped::The real-mailbox suite did not run: add GMAIL_ADDRESS and GMAIL_APP_PASSWORD repository secrets."
           fi
       - name: Live tests (read-only plus a dry-run send)
         if: env.HAVE_CREDS == '1'

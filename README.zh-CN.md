@@ -26,7 +26,7 @@
 
 ```bash
 # 先装 release 里的 wheel（PyPI 还没发）
-pip install "gmail-imap-mcp[mcp] @ https://github.com/luojinghao6-art/gmail-imap-mcp/releases/download/v0.1.3/gmail_imap_mcp-0.1.3-py3-none-any.whl"
+pip install "gmail-imap-mcp[mcp] @ https://github.com/luojinghao6-art/gmail-imap-mcp/releases/download/v0.1.4/gmail_imap_mcp-0.1.4-py3-none-any.whl"
 gmail-imap config                      # 粘贴 16 位应用专用密码
 ```
 
@@ -78,14 +78,14 @@ IMAP/SMTP 的标准认证方式。
 ## 安装
 
 ```bash
-# 从 v0.1.3 release 的 wheel 安装（不用 PyPI 账号）
-pip install "gmail-imap-mcp[mcp] @ https://github.com/luojinghao6-art/gmail-imap-mcp/releases/download/v0.1.3/gmail_imap_mcp-0.1.3-py3-none-any.whl"
+# 从 v0.1.4 release 的 wheel 安装（不用 PyPI 账号）
+pip install "gmail-imap-mcp[mcp] @ https://github.com/luojinghao6-art/gmail-imap-mcp/releases/download/v0.1.4/gmail_imap_mcp-0.1.4-py3-none-any.whl"
 
 # 或者直接从仓库装
 pip install "git+https://github.com/luojinghao6-art/gmail-imap-mcp.git#egg=gmail-imap-mcp[mcp]"
 
 # 只要 CLI，零依赖
-pip install "gmail-imap-mcp @ https://github.com/luojinghao6-art/gmail-imap-mcp/releases/download/v0.1.3/gmail_imap_mcp-0.1.3-py3-none-any.whl"
+pip install "gmail-imap-mcp @ https://github.com/luojinghao6-art/gmail-imap-mcp/releases/download/v0.1.4/gmail_imap_mcp-0.1.4-py3-none-any.whl"
 ```
 
 等发到 PyPI 之后，短写法也能用：`pip install "gmail-imap-mcp[mcp]"`。
@@ -228,6 +228,7 @@ gmail-imap labels
 | `GMAIL_MCP_ATTACHMENT_DIRS=/路径/a:/路径/b` | 附件必须落在这些目录里（用 `os.pathsep` 分隔） |
 | 始终生效 | 凭据类文件（`.credentials.json`、`.env*`、`*.pem`、`*.key`、`id_rsa`）、凭据文件本身、审计日志，以及 `.ssh` 下的文件，一律拒绝发送 |
 | 始终生效 | 每次发信、回复、被拦截的尝试都写一行 JSON 到凭据旁边的 `audit.log` |
+| 始终生效 | 每封邮件写两次：SMTP 之前 `send_intent`，之后 `send`/`reply`。邮件离开本机前痕迹已经落盘 |
 
 ### 代码层面的收件附件约束
 
@@ -240,7 +241,7 @@ gmail-imap labels
 | 始终生效 | 发件人给的文件名被压成单个路径片段：分隔符替换、`.`/`..` 不可能存在、Windows 设备名加前缀、超长截断 |
 | 始终生效 | 已存在的文件绝不覆盖，自动加 `_1`、`_2` 后缀 |
 | `GMAIL_MCP_SCAN_CMD="clamdscan --no-summary {}"` | 每个落盘的附件都过一遍这个命令：退出码 0 保留文件，其他退出码或者扫描器跑不起来，就删文件并让这次调用失败 |
-| `GMAIL_MCP_AUDIT_STRICT=1` | 审计日志写不进去时直接中止发信，而不是只在 stderr 警告一次 |
+| `GMAIL_MCP_AUDIT_STRICT=1` | 发信前先写 `send_intent` 记录，写不进去就中止，什么都不会发出去；如果发完之后补记录失败，抛出 `SentButUnauditedError`（明确写「已发出，重试前先看已发送」），不会伪装成发送失败 |
 | `GMAIL_APP_PASSWORD_FILE=/run/secrets/gmail` | 从文件读应用专用密码，不写进 JSON 配置 |
 
 ## 排障
@@ -261,7 +262,8 @@ gmail-imap labels
 
 ## 现状
 
-0.1.3 加了凭据与审计文件的属主专属权限、`GMAIL_APP_PASSWORD_FILE`、
+0.1.4 修了审计顺序：意图记录先于 SMTP 落盘，发信后补记录失败会明确报「已发出但未审计」，
+不再伪装成发送失败诱导重发。0.1.3 加了凭据与审计文件的属主专属权限、`GMAIL_APP_PASSWORD_FILE`、
 `GMAIL_MCP_AUDIT_STRICT`、默认拒绝的 `GMAIL_MCP_SCAN_CMD` 扫描钩子，以及每晚跑一次的真号
 workflow。已在真实个人 Gmail 账号上跑通：搜索、阅读、附件、发信、回复、Web UI。
 离线测试覆盖 IMAP FETCH/SEARCH 响应、邮件构造与会话头、附件存盘、UID/邮箱解析、
