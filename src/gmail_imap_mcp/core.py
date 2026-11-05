@@ -19,6 +19,7 @@ import re
 import shlex
 import smtplib
 import ssl
+import stat
 import subprocess
 import sys
 import threading
@@ -37,6 +38,7 @@ __all__ = [
     "SentButUnauditedError",
     "PartialSendError",
     "SendStateUnknownError",
+    "PermissionHardeningError",
     "MailClient",
     "Settings",
     "load_settings",
@@ -67,6 +69,7 @@ DEFAULT_TIMEOUT = 45
 READ_ONLY_ENV = "GMAIL_MCP_READ_ONLY"
 ATTACHMENT_DIRS_ENV = "GMAIL_MCP_ATTACHMENT_DIRS"
 DOWNLOAD_DIRS_ENV = "GMAIL_MCP_DOWNLOAD_DIRS"
+STRICT_PERMS_ENV = "GMAIL_MCP_STRICT_PERMISSIONS"
 AUDIT_STRICT_ENV = "GMAIL_MCP_AUDIT_STRICT"
 SCAN_CMD_ENV = "GMAIL_MCP_SCAN_CMD"
 APP_PASSWORD_FILE_ENV = "GMAIL_APP_PASSWORD_FILE"
@@ -120,6 +123,14 @@ class SendStateUnknownError(GmailError):
 
     Treat the message as possibly delivered: check the Sent folder before
     retrying.
+    """
+
+
+class PermissionHardeningError(AuditError):
+    """Owner-only permissions could not be applied and strict mode is on.
+
+    An AuditError so that every path that already handles "the security
+    bookkeeping failed" handles this too.
     """
 
 
@@ -203,24 +214,131 @@ def load_settings(required: bool = True) -> Settings | None:
     return Settings(address, password)
 
 
-def _harden_file(path: Path) -> None:
-    """Best effort: owner-only file permissions.
+_perms_warned = False
 
-    POSIX gets 0600. Windows chmod cannot express that, so the ACL is replaced
-    with a single grant for the current user; failure is not fatal because the
-    tool must still work on locked-down corporate machines.
-    """
+
+def _harden_failed(path: Path, reason: str) -> None:
+    """Report a permission problem once; fatal under strict permissions."""
+    global _perms_warned
+    message = (
+        f"could not restrict permissions on {path}: {reason}. "
+        f"Other local users may be able to read it"
+    )
+    if os.environ.get(STRICT_PERMS_ENV, "").strip().lower() in _TRUE_VALUES:
+        raise PermissionHardeningError(
+            f"Refusing to continue: {message} ({STRICT_PERMS_ENV} is set)."
+        )
+    if not _perms_warned:
+        _perms_warned = True
+        print(f"warning: {message}", file=sys.stderr)
+
+
+def _windows_principals() -> set[str]:
+    """Names and SID that identify the current user in an ACL."""
+    names: set[str] = set()
+    user = os.environ.get("USERNAME", "")
+    if user:
+        names.add(user.lower())
+        for scope in ("USERDOMAIN", "COMPUTERNAME"):
+            value = os.environ.get(scope, "")
+            if value:
+                names.add((value + chr(92) + user).lower())
     try:
-        if os.name == "nt":
-            user = os.environ.get("USERNAME", "")
-            subprocess.run(
-                ["icacls", str(path), "/inheritance:r", "/grant:r", f"{user}:F"],
-                check=False, capture_output=True, timeout=20,
-            )
-        else:
-            os.chmod(path, 0o600)
+        proc = subprocess.run(
+            ["whoami", "/user"], capture_output=True, text=True, timeout=10,
+        )
+        for token in re.findall(r"S-1-5-[0-9-]+", proc.stdout or ""):
+            names.add(token.lower())
     except (OSError, subprocess.SubprocessError):
         pass
+    return names
+
+
+def _windows_acl_private(path: Path, principals: set[str]) -> bool:
+    """True when every ACE on the file names the current user and nothing else."""
+    try:
+        proc = subprocess.run(
+            ["icacls", str(path)], capture_output=True, text=True, timeout=20,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    if proc.returncode != 0:
+        return False
+    aces = [line for line in (proc.stdout or "").splitlines() if ":(" in line]
+    if not aces:
+        return False
+    for line in aces:
+        head = line.split(":(", 1)[0].strip()
+        principal = head.rsplit(" ", 1)[-1].strip().lower()
+        if principal not in principals:
+            return False
+    return True
+
+
+def _harden_windows(path: Path) -> tuple[bool, str]:
+    principals = _windows_principals()
+    user = os.environ.get("USERNAME", "")
+    domain = os.environ.get("USERDOMAIN", "")
+    candidates = [domain + chr(92) + user, user] if domain else [user]
+    reason = "icacls is unavailable"
+    for name in candidates:
+        if not name:
+            continue
+        try:
+            proc = subprocess.run(
+                ["icacls", str(path), "/inheritance:r", "/grant:r", f"{name}:F"],
+                capture_output=True, text=True, timeout=20,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            reason = str(exc)
+            continue
+        if proc.returncode != 0:
+            reason = ((proc.stderr or proc.stdout or "").strip()
+                      or f"icacls exited {proc.returncode}")
+            continue
+        if _windows_acl_private(path, principals):
+            return True, ""
+        reason = "ACL still names other principals"
+    return False, reason
+
+
+def _harden_file(path: Path) -> bool:
+    """Restrict a file to the current user. False when that was not possible.
+
+    POSIX gets 0600 and is verified with stat. Windows chmod cannot express an
+    ACL, so the inherited ACEs are removed, a single grant for the current user
+    is applied, and the ACL is read back and checked. A failure is reported
+    instead of swallowed; GMAIL_MCP_STRICT_PERMISSIONS=1 makes it fatal.
+    """
+    if os.name == "nt":
+        ok, reason = _harden_windows(path)
+    else:
+        try:
+            os.chmod(path, 0o600)
+            mode = stat.S_IMODE(path.stat().st_mode)
+            ok = (mode & 0o077) == 0
+            reason = "" if ok else f"mode is {oct(mode)}"
+        except OSError as exc:
+            ok, reason = False, str(exc)
+    if not ok:
+        _harden_failed(path, reason)
+    return ok
+
+
+def _harden_dir(path: Path) -> bool:
+    """Restrict a directory on POSIX; Windows profile ACLs are left alone."""
+    if os.name == "nt":
+        return True
+    try:
+        os.chmod(path, 0o700)
+        mode = stat.S_IMODE(path.stat().st_mode)
+        ok = (mode & 0o077) == 0
+        reason = "" if ok else f"mode is {oct(mode)}"
+    except OSError as exc:
+        ok, reason = False, str(exc)
+    if not ok:
+        _harden_failed(path, reason)
+    return ok
 
 
 def _harden_dir(path: Path) -> None:
@@ -244,10 +362,21 @@ def save_settings(address: str, app_password: str) -> Path:
     path = config_file()
     path.parent.mkdir(parents=True, exist_ok=True)
     _harden_dir(path.parent)
+    # Create the file empty, lock it down, and only then write the secret: the
+    # password never sits on disk with inherited permissions.
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    os.close(fd)
+    try:
+        _harden_once(path)
+    except PermissionHardeningError:
+        try:
+            path.unlink()
+        except OSError:
+            pass
+        raise
+    fd = os.open(path, os.O_WRONLY | os.O_TRUNC)
     with os.fdopen(fd, "w", encoding="utf-8") as fh:
         fh.write(json.dumps({"address": address, "app_password": clean}, indent=2))
-    _harden_file(path)
     return path
 
 
@@ -274,16 +403,18 @@ def audit_log_path() -> Path:
     return _config_home() / "audit.log"
 
 
-_hardened_paths: set[str] = set()
+_hardened_paths: dict[str, bool] = {}
 _audit_warned = False
 
 
-def _harden_once(path: Path) -> None:
+def _harden_once(path: Path) -> bool:
+    """Harden a path at most once per process; cache the outcome."""
     key = str(path)
     if key in _hardened_paths:
-        return
-    _hardened_paths.add(key)
-    _harden_file(path)
+        return _hardened_paths[key]
+    ok = _harden_file(path)
+    _hardened_paths[key] = ok
+    return ok
 
 
 def _audit(event: str, **fields: Any) -> None:
@@ -303,10 +434,17 @@ def _audit(event: str, **fields: Any) -> None:
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         _harden_dir(path.parent)
-        fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+        if not path.exists():
+            try:
+                fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                os.close(fd)
+            except FileExistsError:
+                pass
+        # Lock the file down before the first line is written.
+        _harden_once(path)
+        fd = os.open(path, os.O_WRONLY | os.O_APPEND)
         with os.fdopen(fd, "a", encoding="utf-8") as fh:
             fh.write(json.dumps(row, ensure_ascii=False, default=str) + "\n")
-        _harden_once(path)
     except OSError as exc:
         if os.environ.get(AUDIT_STRICT_ENV, "").strip().lower() in _TRUE_VALUES:
             raise AuditError(

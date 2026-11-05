@@ -27,7 +27,7 @@ Ships three front-ends over one core:
 
 ```bash
 # install the release wheel (PyPI publication is pending)
-pip install "gmail-imap-mcp[mcp] @ https://github.com/luojinghao6-art/gmail-imap-mcp/releases/download/v0.1.5/gmail_imap_mcp-0.1.5-py3-none-any.whl"
+pip install "gmail-imap-mcp[mcp] @ https://github.com/luojinghao6-art/gmail-imap-mcp/releases/download/v0.1.6/gmail_imap_mcp-0.1.6-py3-none-any.whl"
 gmail-imap config                      # paste a Google App Password (16 chars)
 ```
 
@@ -83,14 +83,14 @@ you need those, use a Gmail API server.
 ## Install
 
 ```bash
-# from the v0.1.5 release wheel (no PyPI account needed)
-pip install "gmail-imap-mcp[mcp] @ https://github.com/luojinghao6-art/gmail-imap-mcp/releases/download/v0.1.5/gmail_imap_mcp-0.1.5-py3-none-any.whl"
+# from the v0.1.6 release wheel (no PyPI account needed)
+pip install "gmail-imap-mcp[mcp] @ https://github.com/luojinghao6-art/gmail-imap-mcp/releases/download/v0.1.6/gmail_imap_mcp-0.1.6-py3-none-any.whl"
 
 # or straight from the repo
 pip install "git+https://github.com/luojinghao6-art/gmail-imap-mcp.git#egg=gmail-imap-mcp[mcp]"
 
 # CLI only, zero dependencies
-pip install "gmail-imap-mcp @ https://github.com/luojinghao6-art/gmail-imap-mcp/releases/download/v0.1.5/gmail_imap_mcp-0.1.5-py3-none-any.whl"
+pip install "gmail-imap-mcp @ https://github.com/luojinghao6-art/gmail-imap-mcp/releases/download/v0.1.6/gmail_imap_mcp-0.1.6-py3-none-any.whl"
 ```
 
 Once the package is on PyPI, the short form works too:
@@ -223,10 +223,15 @@ Add `--json` to `search` / `read` / `labels` for machine-readable output.
   `Host` headers (DNS rebinding), checks `Origin`/`Referer` on writes, requires
   `Content-Type: application/json`, and sends CSP, `X-Frame-Options: DENY`,
   `nosniff` and `no-referrer`. Do not port-forward it.
-- **Credentials are owner-only on disk.** `gmail-imap config` writes 0600 on
-  POSIX and replaces the ACL with a single grant for the current user on
-  Windows. If you would rather not keep the password in the JSON config at all,
-  point `GMAIL_APP_PASSWORD_FILE` at a keychain export or a mounted secret.
+- **Credentials are owner-only on disk, and that is checked.** The config file
+  is created empty, locked down, and only then filled, so the password never
+  exists under inherited permissions. POSIX verifies the mode with `stat`;
+  Windows removes the inherited ACEs, grants the current user, and reads the ACL
+  back to confirm nothing else remains. If that cannot be done the tool warns
+  once, and with `GMAIL_MCP_STRICT_PERMISSIONS=1` it refuses: `gmail-imap config`
+  deletes the half-written file, and the audit write fails the send. If you
+  would rather not keep the password in the JSON config, point
+  `GMAIL_APP_PASSWORD_FILE` at a keychain export or a mounted secret.
 - **This is a personal connector, not a shared service.** An App Password is
   full-mailbox access, and any process running as your OS user can read the
   config. One account per OS user or container; do not run it multi-tenant.
@@ -262,6 +267,7 @@ Attachments come *from* strangers, so inbound writes are constrained as well:
 | `GMAIL_MCP_SCAN_CMD="clamdscan --no-summary {}"` | Run this command on every saved attachment. Exit 0 keeps the file; any other exit, or a scanner that cannot run, deletes it and fails the call |
 | `GMAIL_MCP_AUDIT_STRICT=1` | Writes a `send_intent` record before SMTP; a failed write aborts the send, so nothing leaves the machine. If the post-send record fails instead, the call raises `SentButUnauditedError` — "WAS sent, check the Sent folder before retrying" — rather than looking like a failed send |
 | `GMAIL_APP_PASSWORD_FILE=/run/secrets/gmail` | Read the App Password from a file instead of the JSON config |
+| `GMAIL_MCP_STRICT_PERMISSIONS=1` | A permission failure aborts instead of warning: no credentials are saved and the audit write fails the send |
 
 ## Troubleshooting
 
@@ -283,7 +289,9 @@ default branch can read Actions secrets.
 
 ## Status
 
-v0.1.5 makes send state honest end to end: partial deliveries raise
+v0.1.6 stops trusting permission hardening: the ACL/mode is verified after it
+is applied, failures are reported instead of swallowed, and
+`GMAIL_MCP_STRICT_PERMISSIONS=1` makes them fatal. v0.1.5 made send state honest end to end: partial deliveries raise
 `PartialSendError` with `sent_to`/`refused`, and a mid-transfer SMTP failure
 raises `SendStateUnknownError` instead of a plain failure that invites a
 duplicate send. v0.1.4 fixed audit ordering: the intent record is written before SMTP, and a

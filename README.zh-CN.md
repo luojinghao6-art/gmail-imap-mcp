@@ -26,7 +26,7 @@
 
 ```bash
 # 先装 release 里的 wheel（PyPI 还没发）
-pip install "gmail-imap-mcp[mcp] @ https://github.com/luojinghao6-art/gmail-imap-mcp/releases/download/v0.1.5/gmail_imap_mcp-0.1.5-py3-none-any.whl"
+pip install "gmail-imap-mcp[mcp] @ https://github.com/luojinghao6-art/gmail-imap-mcp/releases/download/v0.1.6/gmail_imap_mcp-0.1.6-py3-none-any.whl"
 gmail-imap config                      # 粘贴 16 位应用专用密码
 ```
 
@@ -78,14 +78,14 @@ IMAP/SMTP 的标准认证方式。
 ## 安装
 
 ```bash
-# 从 v0.1.5 release 的 wheel 安装（不用 PyPI 账号）
-pip install "gmail-imap-mcp[mcp] @ https://github.com/luojinghao6-art/gmail-imap-mcp/releases/download/v0.1.5/gmail_imap_mcp-0.1.5-py3-none-any.whl"
+# 从 v0.1.6 release 的 wheel 安装（不用 PyPI 账号）
+pip install "gmail-imap-mcp[mcp] @ https://github.com/luojinghao6-art/gmail-imap-mcp/releases/download/v0.1.6/gmail_imap_mcp-0.1.6-py3-none-any.whl"
 
 # 或者直接从仓库装
 pip install "git+https://github.com/luojinghao6-art/gmail-imap-mcp.git#egg=gmail-imap-mcp[mcp]"
 
 # 只要 CLI，零依赖
-pip install "gmail-imap-mcp @ https://github.com/luojinghao6-art/gmail-imap-mcp/releases/download/v0.1.5/gmail_imap_mcp-0.1.5-py3-none-any.whl"
+pip install "gmail-imap-mcp @ https://github.com/luojinghao6-art/gmail-imap-mcp/releases/download/v0.1.6/gmail_imap_mcp-0.1.6-py3-none-any.whl"
 ```
 
 等发到 PyPI 之后，短写法也能用：`pip install "gmail-imap-mcp[mcp]"`。
@@ -209,8 +209,11 @@ gmail-imap labels
 - **Web UI 只监听本机**，有 token 校验，还拒绝非本机 `Host`（防 DNS rebinding）、
   写操作校验 `Origin`/`Referer`、要求 `Content-Type: application/json`，并下发
   CSP、`X-Frame-Options: DENY`、`nosniff`、`no-referrer`。别往公网转发。
-- **凭据只有你自己能读。** `gmail-imap config` 在 POSIX 上写 0600，在 Windows 上把
-  ACL 换成只给当前用户的一条授权。连 JSON 配置文件都不想放密码的话，把
+- **凭据只有你自己能读，而且是校验过的。** 配置文件先建成空文件、锁好权限、再写内容，
+  密码不会以继承权限存在过。POSIX 上写 0600 并用 `stat` 复核；Windows 上删掉继承 ACE、
+  只留当前用户一条授权，再把 ACL 读回来确认没有别的 principal。做不到就警告一次；
+  设了 `GMAIL_MCP_STRICT_PERMISSIONS=1` 直接拒绝——`gmail-imap config` 会删掉半成品文件，
+  审计写不进去也会让发信失败。连 JSON 配置文件都不想放密码的话，把
   `GMAIL_APP_PASSWORD_FILE` 指到 keychain 导出或挂载的 secret。
 - **这是个人连接器，不是共享服务。** 应用专用密码等于整个邮箱，而且以你系统账号
   运行的程序都能读到配置。一个系统用户/容器配一个账号，别做多租户。
@@ -244,6 +247,7 @@ gmail-imap labels
 | `GMAIL_MCP_SCAN_CMD="clamdscan --no-summary {}"` | 每个落盘的附件都过一遍这个命令：退出码 0 保留文件，其他退出码或者扫描器跑不起来，就删文件并让这次调用失败 |
 | `GMAIL_MCP_AUDIT_STRICT=1` | 发信前先写 `send_intent` 记录，写不进去就中止，什么都不会发出去；如果发完之后补记录失败，抛出 `SentButUnauditedError`（明确写「已发出，重试前先看已发送」），不会伪装成发送失败 |
 | `GMAIL_APP_PASSWORD_FILE=/run/secrets/gmail` | 从文件读应用专用密码，不写进 JSON 配置 |
+| `GMAIL_MCP_STRICT_PERMISSIONS=1` | 权限加固失败直接中止：凭据不落盘，审计写不进去也让发信失败 |
 
 ## 排障
 
@@ -263,7 +267,8 @@ gmail-imap labels
 
 ## 现状
 
-0.1.5 把发送状态说清楚：部分收件人被拒抛 `PartialSendError`（带 `sent_to`/`refused`），
+0.1.6 不再「信任」权限加固：设完之后会复核 ACL/mode，失败不再吞掉，
+`GMAIL_MCP_STRICT_PERMISSIONS=1` 直接当致命错误。0.1.5 把发送状态说清楚：部分收件人被拒抛 `PartialSendError`（带 `sent_to`/`refused`），
 传输中途断掉抛 `SendStateUnknownError`，不再用一句「发送失败」诱导重发。0.1.4 修了审计顺序：意图记录先于 SMTP 落盘，发信后补记录失败会明确报「已发出但未审计」，
 不再伪装成发送失败诱导重发。0.1.3 加了凭据与审计文件的属主专属权限、`GMAIL_APP_PASSWORD_FILE`、
 `GMAIL_MCP_AUDIT_STRICT`、默认拒绝的 `GMAIL_MCP_SCAN_CMD` 扫描钩子，以及每晚跑一次的真号

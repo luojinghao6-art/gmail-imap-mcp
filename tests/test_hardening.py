@@ -12,10 +12,15 @@ from unittest import mock
 from gmail_imap_mcp import core
 from gmail_imap_mcp.core import (
     GmailError,
+    PermissionHardeningError,
     _audit,
+    _harden_file,
     _save_attachments,
+    _windows_acl_private,
+    _windows_principals,
     audit_log_path,
     load_settings,
+    save_settings,
     scan_attachment,
 )
 
@@ -44,6 +49,7 @@ class Base(unittest.TestCase):
         legacy.start()
         self.addCleanup(legacy.stop)
         core._audit_warned = False
+        core._perms_warned = False
         core._hardened_paths.clear()
 
 
@@ -78,6 +84,59 @@ class AuditTests(Base):
             with self.assertRaises(GmailError) as ctx:
                 _audit("send")
         self.assertIn("GMAIL_MCP_AUDIT_STRICT", str(ctx.exception))
+
+
+class PermissionTests(Base):
+    def probe(self):
+        path = Path(self.tmp.name) / "probe.txt"
+        path.write_text("x", encoding="utf-8")
+        return path
+
+    def force_failure(self):
+        if os.name == "nt":
+            return mock.patch("gmail_imap_mcp.core._harden_windows",
+                              return_value=(False, "denied"))
+        return mock.patch("gmail_imap_mcp.core.os.chmod",
+                          side_effect=OSError("denied"))
+
+    def test_failure_is_reported_not_swallowed(self):
+        path = self.probe()
+        err = StringIO()
+        with self.force_failure():
+            with redirect_stderr(err):
+                self.assertFalse(_harden_file(path))
+                _harden_file(path)
+        self.assertEqual(err.getvalue().count("could not restrict permissions"), 1)
+        self.assertIn("denied", err.getvalue())
+
+    def test_strict_permissions_raises(self):
+        path = self.probe()
+        with mock.patch.dict(os.environ,
+                             {"GMAIL_MCP_STRICT_PERMISSIONS": "1"}):
+            with self.force_failure():
+                with redirect_stderr(StringIO()):
+                    with self.assertRaises(PermissionHardeningError):
+                        _harden_file(path)
+
+    def test_save_settings_does_not_keep_an_unprotected_secret(self):
+        with mock.patch.dict(os.environ,
+                             {"GMAIL_MCP_STRICT_PERMISSIONS": "1"}):
+            with mock.patch("gmail_imap_mcp.core._harden_once",
+                            side_effect=PermissionHardeningError("nope")):
+                with self.assertRaises(PermissionHardeningError):
+                    save_settings("me@gmail.com", "a" * 16)
+        self.assertFalse((self.home / "credentials.json").exists())
+
+    @unittest.skipUnless(os.name == "nt", "Windows ACLs")
+    def test_windows_acl_is_verified(self):
+        path = self.probe()
+        self.assertTrue(_harden_file(path))
+        self.assertTrue(_windows_acl_private(path, _windows_principals()))
+
+    @unittest.skipIf(os.name == "nt", "POSIX file modes only")
+    def test_saved_credentials_are_owner_only(self):
+        path = save_settings("me@gmail.com", "a" * 16)
+        self.assertEqual(path.stat().st_mode & 0o777, 0o600)
 
 
 class PasswordFileTests(Base):
