@@ -35,6 +35,8 @@ __all__ = [
     "AuthError",
     "AuditError",
     "SentButUnauditedError",
+    "PartialSendError",
+    "SendStateUnknownError",
     "MailClient",
     "Settings",
     "load_settings",
@@ -97,6 +99,27 @@ class SentButUnauditedError(AuditError):
 
     Distinct from AuditError on purpose: retrying a plain "audit failed" would
     send the message twice.
+    """
+
+
+class PartialSendError(GmailError):
+    """Some recipients accepted the message, others were refused.
+
+    Carries ``sent_to`` and ``refused`` so a caller can retry only the failures
+    instead of re-sending to everyone.
+    """
+
+    def __init__(self, sent_to: list[str], refused: list[str], message: str):
+        super().__init__(message)
+        self.sent_to = list(sent_to)
+        self.refused = list(refused)
+
+
+class SendStateUnknownError(GmailError):
+    """SMTP failed mid-transfer, so delivery state cannot be determined.
+
+    Treat the message as possibly delivered: check the Sent folder before
+    retrying.
     """
 
 
@@ -1010,9 +1033,21 @@ class MailClient:
             _audit_quietly("send_error", action=action, error=str(exc), **record)
             raise
         if refused:
-            _audit_quietly("send_error", action=action,
-                           error=f"refused: {refused}", **record)
-            raise GmailError(f"Recipients refused: {refused}")
+            refused_list = sorted(str(addr) for addr in refused)
+            delivered = [addr for addr in recipients if addr not in refused]
+            if not delivered:
+                _audit_quietly("send_error", action=action,
+                               error=f"refused: {refused}", **record)
+                raise GmailError(f"No recipient accepted the message: {refused}")
+            _audit_quietly("send_partial", action=action, delivered=delivered,
+                           refused=refused_list, **record)
+            raise PartialSendError(
+                delivered, refused_list,
+                f"Delivered to {len(delivered)} of {len(recipients)} recipients "
+                f"({', '.join(delivered)}); refused: {', '.join(refused_list)}. "
+                f"The message WAS delivered to the recipients above - do not resend "
+                f"to them; retry only the refused ones if that is what you want."
+            )
 
         try:
             _audit(action, **record)
@@ -1112,8 +1147,16 @@ class MailClient:
             return smtp.send_message(
                 msg, from_addr=self.settings.address, to_addrs=recipients
             )
+        except smtplib.SMTPRecipientsRefused as exc:
+            raise GmailError(
+                f"No recipient accepted the message: {exc.recipients}"
+            ) from exc
         except (smtplib.SMTPException, OSError) as exc:
-            raise GmailError(f"Send failed: {exc}") from exc
+            raise SendStateUnknownError(
+                f"SMTP failed during the transfer: {exc}. Delivery state is "
+                f"unknown - some recipients may already have the message. Check "
+                f"the Sent folder before retrying."
+            ) from exc
         finally:
             try:
                 smtp.quit()

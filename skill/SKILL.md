@@ -98,6 +98,8 @@ deleted if flagged; a scan that cannot run also deletes it.
 | Timeout | Gmail unreachable; try `GMAIL_PROXY=socks5://127.0.0.1:7890` |
 | Empty search that should match | Add `in:anywhere`; the default scope is All Mail |
 | `SentButUnauditedError` / "the mail WAS sent" | The message left the account; the audit write failed afterwards. Do not resend — check the Sent folder first |
+| `PartialSendError` | Some recipients already received it. Retry only the addresses in `refused`, never the ones in `sent_to` |
+| `SendStateUnknownError` | SMTP dropped mid-transfer. Delivery is unknown; check the Sent folder before retrying |
 
 ## Limits
 

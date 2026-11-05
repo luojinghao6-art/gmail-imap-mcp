@@ -26,7 +26,7 @@
 
 ```bash
 # 先装 release 里的 wheel（PyPI 还没发）
-pip install "gmail-imap-mcp[mcp] @ https://github.com/luojinghao6-art/gmail-imap-mcp/releases/download/v0.1.4/gmail_imap_mcp-0.1.4-py3-none-any.whl"
+pip install "gmail-imap-mcp[mcp] @ https://github.com/luojinghao6-art/gmail-imap-mcp/releases/download/v0.1.5/gmail_imap_mcp-0.1.5-py3-none-any.whl"
 gmail-imap config                      # 粘贴 16 位应用专用密码
 ```
 
@@ -78,14 +78,14 @@ IMAP/SMTP 的标准认证方式。
 ## 安装
 
 ```bash
-# 从 v0.1.4 release 的 wheel 安装（不用 PyPI 账号）
-pip install "gmail-imap-mcp[mcp] @ https://github.com/luojinghao6-art/gmail-imap-mcp/releases/download/v0.1.4/gmail_imap_mcp-0.1.4-py3-none-any.whl"
+# 从 v0.1.5 release 的 wheel 安装（不用 PyPI 账号）
+pip install "gmail-imap-mcp[mcp] @ https://github.com/luojinghao6-art/gmail-imap-mcp/releases/download/v0.1.5/gmail_imap_mcp-0.1.5-py3-none-any.whl"
 
 # 或者直接从仓库装
 pip install "git+https://github.com/luojinghao6-art/gmail-imap-mcp.git#egg=gmail-imap-mcp[mcp]"
 
 # 只要 CLI，零依赖
-pip install "gmail-imap-mcp @ https://github.com/luojinghao6-art/gmail-imap-mcp/releases/download/v0.1.4/gmail_imap_mcp-0.1.4-py3-none-any.whl"
+pip install "gmail-imap-mcp @ https://github.com/luojinghao6-art/gmail-imap-mcp/releases/download/v0.1.5/gmail_imap_mcp-0.1.5-py3-none-any.whl"
 ```
 
 等发到 PyPI 之后，短写法也能用：`pip install "gmail-imap-mcp[mcp]"`。
@@ -229,6 +229,7 @@ gmail-imap labels
 | 始终生效 | 凭据类文件（`.credentials.json`、`.env*`、`*.pem`、`*.key`、`id_rsa`）、凭据文件本身、审计日志，以及 `.ssh` 下的文件，一律拒绝发送 |
 | 始终生效 | 每次发信、回复、被拦截的尝试都写一行 JSON 到凭据旁边的 `audit.log` |
 | 始终生效 | 每封邮件写两次：SMTP 之前 `send_intent`，之后 `send`/`reply`。邮件离开本机前痕迹已经落盘 |
+| 始终生效 | 部分收件人被拒时抛 `PartialSendError`，带 `sent_to` 和 `refused`，只重试被拒的那些；传输中途断掉抛 `SendStateUnknownError`，表示投递状态未知，重试前先看已发送 |
 
 ### 代码层面的收件附件约束
 
@@ -262,7 +263,8 @@ gmail-imap labels
 
 ## 现状
 
-0.1.4 修了审计顺序：意图记录先于 SMTP 落盘，发信后补记录失败会明确报「已发出但未审计」，
+0.1.5 把发送状态说清楚：部分收件人被拒抛 `PartialSendError`（带 `sent_to`/`refused`），
+传输中途断掉抛 `SendStateUnknownError`，不再用一句「发送失败」诱导重发。0.1.4 修了审计顺序：意图记录先于 SMTP 落盘，发信后补记录失败会明确报「已发出但未审计」，
 不再伪装成发送失败诱导重发。0.1.3 加了凭据与审计文件的属主专属权限、`GMAIL_APP_PASSWORD_FILE`、
 `GMAIL_MCP_AUDIT_STRICT`、默认拒绝的 `GMAIL_MCP_SCAN_CMD` 扫描钩子，以及每晚跑一次的真号
 workflow。已在真实个人 Gmail 账号上跑通：搜索、阅读、附件、发信、回复、Web UI。

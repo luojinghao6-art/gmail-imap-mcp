@@ -11,6 +11,8 @@ from gmail_imap_mcp.core import (
     AuditError,
     GmailError,
     MailClient,
+    PartialSendError,
+    SendStateUnknownError,
     SentButUnauditedError,
     Settings,
     audit_log_path,
@@ -179,6 +181,30 @@ class SendTests(unittest.TestCase):
                 self.client.send(["a@b.com"], "s", "b")
         self.assertEqual(len(self.sent), 1)
         self.assertIn("WAS sent", str(ctx.exception))
+
+    def test_partial_delivery_is_reported(self):
+        self.client._smtp_send = lambda msg, recipients: {"c@d.com": (550, b"no")}
+        with self.assertRaises(PartialSendError) as ctx:
+            self.client.send(["a@b.com", "c@d.com"], "s", "b")
+        err = ctx.exception
+        self.assertEqual(err.sent_to, ["a@b.com"])
+        self.assertEqual(err.refused, ["c@d.com"])
+        self.assertIn("WAS delivered", str(err))
+        row = self.audit_rows()[-1]
+        self.assertEqual(row["event"], "send_partial")
+        self.assertEqual(row["delivered"], ["a@b.com"])
+        self.assertEqual(row["refused"], ["c@d.com"])
+
+    def test_smtp_drop_mid_send_is_reported_as_unknown(self):
+        def boom(msg, recipients):
+            raise SendStateUnknownError("connection dropped")
+
+        self.client._smtp_send = boom
+        with self.assertRaises(SendStateUnknownError):
+            self.client.send(["a@b.com"], "s", "b")
+        row = self.audit_rows()[-1]
+        self.assertEqual(row["event"], "send_error")
+        self.assertIn("connection dropped", row["error"])
 
     def test_read_only_message_survives_an_audit_failure(self):
         with mock.patch.dict(os.environ, {"GMAIL_MCP_READ_ONLY": "1"}):

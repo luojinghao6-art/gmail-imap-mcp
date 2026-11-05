@@ -27,7 +27,7 @@ Ships three front-ends over one core:
 
 ```bash
 # install the release wheel (PyPI publication is pending)
-pip install "gmail-imap-mcp[mcp] @ https://github.com/luojinghao6-art/gmail-imap-mcp/releases/download/v0.1.4/gmail_imap_mcp-0.1.4-py3-none-any.whl"
+pip install "gmail-imap-mcp[mcp] @ https://github.com/luojinghao6-art/gmail-imap-mcp/releases/download/v0.1.5/gmail_imap_mcp-0.1.5-py3-none-any.whl"
 gmail-imap config                      # paste a Google App Password (16 chars)
 ```
 
@@ -83,14 +83,14 @@ you need those, use a Gmail API server.
 ## Install
 
 ```bash
-# from the v0.1.4 release wheel (no PyPI account needed)
-pip install "gmail-imap-mcp[mcp] @ https://github.com/luojinghao6-art/gmail-imap-mcp/releases/download/v0.1.4/gmail_imap_mcp-0.1.4-py3-none-any.whl"
+# from the v0.1.5 release wheel (no PyPI account needed)
+pip install "gmail-imap-mcp[mcp] @ https://github.com/luojinghao6-art/gmail-imap-mcp/releases/download/v0.1.5/gmail_imap_mcp-0.1.5-py3-none-any.whl"
 
 # or straight from the repo
 pip install "git+https://github.com/luojinghao6-art/gmail-imap-mcp.git#egg=gmail-imap-mcp[mcp]"
 
 # CLI only, zero dependencies
-pip install "gmail-imap-mcp @ https://github.com/luojinghao6-art/gmail-imap-mcp/releases/download/v0.1.4/gmail_imap_mcp-0.1.4-py3-none-any.whl"
+pip install "gmail-imap-mcp @ https://github.com/luojinghao6-art/gmail-imap-mcp/releases/download/v0.1.5/gmail_imap_mcp-0.1.5-py3-none-any.whl"
 ```
 
 Once the package is on PyPI, the short form works too:
@@ -247,6 +247,7 @@ Prompt instructions are a suggestion; these are enforced in
 | always on | Files that look like credentials (`.credentials.json`, `.env*`, `*.pem`, `*.key`, `id_rsa`), the credentials file itself, the audit log, and anything under `.ssh` are refused as attachments |
 | always on | Every send, reply and blocked attempt is appended as JSON to `audit.log` next to the credentials file |
 | always on | Each send is recorded twice: `send_intent` before SMTP and `send`/`reply` after. The trail exists before the message can leave |
+| always on | A partial delivery raises `PartialSendError` carrying `sent_to` and `refused`, so only the refused addresses get retried. An SMTP failure mid-transfer raises `SendStateUnknownError` — delivery unknown, check the Sent folder |
 
 ### Code-level download controls
 
@@ -282,7 +283,10 @@ default branch can read Actions secrets.
 
 ## Status
 
-v0.1.4 fixes audit ordering: the intent record is written before SMTP, and a
+v0.1.5 makes send state honest end to end: partial deliveries raise
+`PartialSendError` with `sent_to`/`refused`, and a mid-transfer SMTP failure
+raises `SendStateUnknownError` instead of a plain failure that invites a
+duplicate send. v0.1.4 fixed audit ordering: the intent record is written before SMTP, and a
 post-send audit failure is reported as "sent but unaudited" instead of a plain
 failure that invites a double send. v0.1.3 added owner-only credentials and audit files, `GMAIL_APP_PASSWORD_FILE`,
 `GMAIL_MCP_AUDIT_STRICT`, an optional `GMAIL_MCP_SCAN_CMD` scan hook that fails

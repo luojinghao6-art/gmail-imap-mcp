@@ -4,6 +4,8 @@ from .core import (  # noqa: F401
     AuditError,
     AuthError,
     GmailError,
+    PartialSendError,
+    SendStateUnknownError,
     SentButUnauditedError,
     MailClient,
     Settings,
@@ -13,11 +15,13 @@ from .core import (  # noqa: F401
     save_settings,
 )
 
-__version__ = "0.1.4"
+__version__ = "0.1.5"
 __all__ = [
     "AuditError",
     "AuthError",
     "GmailError",
+    "PartialSendError",
+    "SendStateUnknownError",
     "SentButUnauditedError",
     "MailClient",
     "Settings",
