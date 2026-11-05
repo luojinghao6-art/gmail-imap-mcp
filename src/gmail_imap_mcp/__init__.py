@@ -11,7 +11,7 @@ from .core import (  # noqa: F401
     save_settings,
 )
 
-__version__ = "0.1.2"
+__version__ = "0.1.3"
 __all__ = [
     "AuthError",
     "GmailError",

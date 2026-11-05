@@ -1,0 +1,38 @@
+name: Live Gmail
+
+# Runs the real-mailbox suite against a configured account. Needs the
+# GMAIL_ADDRESS and GMAIL_APP_PASSWORD repository secrets; without them the
+# test step is skipped, so forks and PRs never touch a mailbox.
+on:
+  schedule:
+    - cron: "17 4 * * *" # daily, 04:17 UTC
+  workflow_dispatch:
+
+jobs:
+  live:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[mcp]"
+      - name: Detect credentials
+        env:
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+        run: |
+          if [ -n "$GMAIL_APP_PASSWORD" ]; then
+            echo "HAVE_CREDS=1" >> "$GITHUB_ENV"
+          else
+            echo "No GMAIL_APP_PASSWORD secret; live tests skipped."
+          fi
+      - name: Live tests (read-only plus a dry-run send)
+        if: env.HAVE_CREDS == '1'
+        env:
+          GMAIL_IMAP_LIVE: "1"
+          GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+        run: python -m unittest tests.test_live -v

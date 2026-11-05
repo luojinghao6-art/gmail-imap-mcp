@@ -16,8 +16,11 @@ import json
 import mimetypes
 import os
 import re
+import shlex
 import smtplib
 import ssl
+import subprocess
+import sys
 import threading
 from email import policy
 from email.header import decode_header
@@ -45,6 +48,7 @@ __all__ = [
     "default_download_dir",
     "resolve_download_dir",
     "write_attachment",
+    "scan_attachment",
 ]
 
 APP_NAME = "gmail-imap-mcp"
@@ -59,6 +63,10 @@ DEFAULT_TIMEOUT = 45
 READ_ONLY_ENV = "GMAIL_MCP_READ_ONLY"
 ATTACHMENT_DIRS_ENV = "GMAIL_MCP_ATTACHMENT_DIRS"
 DOWNLOAD_DIRS_ENV = "GMAIL_MCP_DOWNLOAD_DIRS"
+AUDIT_STRICT_ENV = "GMAIL_MCP_AUDIT_STRICT"
+SCAN_CMD_ENV = "GMAIL_MCP_SCAN_CMD"
+APP_PASSWORD_FILE_ENV = "GMAIL_APP_PASSWORD_FILE"
+SCAN_TIMEOUT = 120
 
 HEADER_SPEC = (
     "(UID RFC822.SIZE FLAGS X-GM-MSGID X-GM-LABELS "
@@ -109,9 +117,25 @@ def _legacy_config() -> Path:
     return Path.home() / ".claude" / "skills" / "gmail" / ".credentials.json"
 
 
+def _read_password_file(raw: str) -> str:
+    """Read an App Password from a file named by GMAIL_APP_PASSWORD_FILE.
+
+    Lets the secret live in an OS keychain export, a systemd credential or a
+    mounted secret instead of the tool's own JSON config.
+    """
+    path = Path(raw).expanduser()
+    try:
+        return path.read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        raise GmailError(f"Cannot read {APP_PASSWORD_FILE_ENV}={path}: {exc}") from exc
+
+
 def load_settings(required: bool = True) -> Settings | None:
     address = os.environ.get("GMAIL_ADDRESS", "").strip()
     password = os.environ.get("GMAIL_APP_PASSWORD", "").strip()
+    secret_file = os.environ.get(APP_PASSWORD_FILE_ENV, "").strip()
+    if not password and secret_file:
+        password = _read_password_file(secret_file)
 
     if not (address and password):
         for path in (config_file(), _legacy_config()):
@@ -130,12 +154,40 @@ def load_settings(required: bool = True) -> Settings | None:
         if not required:
             return None
         raise AuthError(
-            "No credentials found. Run `gmail-imap config` (or set "
-            "GMAIL_ADDRESS and GMAIL_APP_PASSWORD).\n"
+            "No credentials found. Run `gmail-imap config`, or set "
+            "GMAIL_ADDRESS plus GMAIL_APP_PASSWORD / GMAIL_APP_PASSWORD_FILE).\n"
             "Create an App Password at https://myaccount.google.com/apppasswords "
             "— 2-Step Verification must be on first."
         )
     return Settings(address, password)
+
+
+def _harden_file(path: Path) -> None:
+    """Best effort: owner-only file permissions.
+
+    POSIX gets 0600. Windows chmod cannot express that, so the ACL is replaced
+    with a single grant for the current user; failure is not fatal because the
+    tool must still work on locked-down corporate machines.
+    """
+    try:
+        if os.name == "nt":
+            user = os.environ.get("USERNAME", "")
+            subprocess.run(
+                ["icacls", str(path), "/inheritance:r", "/grant:r", f"{user}:F"],
+                check=False, capture_output=True, timeout=20,
+            )
+        else:
+            os.chmod(path, 0o600)
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
+def _harden_dir(path: Path) -> None:
+    try:
+        if os.name != "nt":
+            os.chmod(path, 0o700)
+    except OSError:
+        pass
 
 
 def save_settings(address: str, app_password: str) -> Path:
@@ -150,14 +202,11 @@ def save_settings(address: str, app_password: str) -> Path:
         )
     path = config_file()
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps({"address": address, "app_password": clean}, indent=2),
-        encoding="utf-8",
-    )
-    try:
-        os.chmod(path, 0o600)
-    except OSError:
-        pass
+    _harden_dir(path.parent)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(json.dumps({"address": address, "app_password": clean}, indent=2))
+    _harden_file(path)
     return path
 
 
@@ -184,20 +233,48 @@ def audit_log_path() -> Path:
     return _config_home() / "audit.log"
 
 
+_hardened_paths: set[str] = set()
+_audit_warned = False
+
+
+def _harden_once(path: Path) -> None:
+    key = str(path)
+    if key in _hardened_paths:
+        return
+    _hardened_paths.add(key)
+    _harden_file(path)
+
+
 def _audit(event: str, **fields: Any) -> None:
-    """Append one JSON line to the audit log. Auditing never breaks mail."""
+    """Append one JSON line to the audit log, owner-only.
+
+    A failed write is reported once on stderr, so a broken audit trail is never
+    silent. With GMAIL_MCP_AUDIT_STRICT=1 the failure is fatal instead: mail is
+    not sent without a trail.
+    """
+    global _audit_warned
     row: dict[str, Any] = {
         "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "event": event,
     }
     row.update(fields)
+    path = audit_log_path()
     try:
-        path = audit_log_path()
         path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("a", encoding="utf-8") as fh:
+        _harden_dir(path.parent)
+        fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+        with os.fdopen(fd, "a", encoding="utf-8") as fh:
             fh.write(json.dumps(row, ensure_ascii=False, default=str) + "\n")
-    except OSError:
-        pass
+        _harden_once(path)
+    except OSError as exc:
+        if os.environ.get(AUDIT_STRICT_ENV, "").strip().lower() in _TRUE_VALUES:
+            raise GmailError(
+                f"Cannot write the audit log {path}: {exc}. Refusing to continue "
+                f"because {AUDIT_STRICT_ENV} is set."
+            ) from exc
+        if not _audit_warned:
+            _audit_warned = True
+            print(f"warning: cannot write audit log {path}: {exc}", file=sys.stderr)
 
 
 def _ensure_writable(action: str) -> None:
@@ -1147,6 +1224,79 @@ def write_attachment(out_dir: Path, name: str, blob: bytes) -> Path:
     return target
 
 
+def _split_command(template: str) -> list[str]:
+    """Split a command template the way each platform expects.
+
+    POSIX gets shlex rules. Windows keeps backslashes and needs quoted paths
+    (``"C:/Program Files/..."``) to survive, so surrounding quotes are removed
+    from each token.
+    """
+    parts = shlex.split(template, posix=(os.name != "nt"))
+    if os.name == "nt":
+        parts = [
+            part[1:-1]
+            if len(part) > 1 and part[0] == part[-1] and part[0] in ('"', "'")
+            else part
+            for part in parts
+        ]
+    return [part for part in parts if part]
+
+
+def _scan_argv(path: Path) -> list[str] | None:
+    template = os.environ.get(SCAN_CMD_ENV, "").strip()
+    if not template:
+        return None
+    parts = _split_command(template)
+    if not parts:
+        return None
+    if any("{}" in part for part in parts):
+        return [part.replace("{}", str(path)) for part in parts]
+    return parts + [str(path)]
+
+
+def _discard(path: Path) -> None:
+    try:
+        path.unlink()
+    except OSError:
+        pass
+
+
+def scan_attachment(path: Path) -> dict[str, Any]:
+    """Run GMAIL_MCP_SCAN_CMD against a downloaded file, if configured.
+
+    Exit 0 means clean. Exit 1 means the scanner flagged the file; any other
+    failure means the scan did not happen. Both delete the file and raise, so a
+    misconfigured scanner fails closed instead of quietly handing over a
+    possibly infected attachment.
+
+    This is a hook, not a malware engine. Without it, downloaded files are
+    untrusted content and must never be opened automatically.
+    """
+    argv = _scan_argv(path)
+    if argv is None:
+        return {"scanned": False, "reason": f"{SCAN_CMD_ENV} is not set"}
+    try:
+        proc = subprocess.run(
+            argv, capture_output=True, text=True, timeout=SCAN_TIMEOUT,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        _discard(path)
+        raise GmailError(
+            f"Attachment scanner could not run ({exc}); deleted {path.name}"
+        ) from exc
+    output = ((proc.stdout or "").strip() or (proc.stderr or "").strip())[:500]
+    if proc.returncode == 0:
+        return {"scanned": True, "clean": True, "scanner": argv[0], "output": output}
+    _discard(path)
+    if proc.returncode == 1:
+        raise GmailError(
+            f"Scanner flagged {path.name}; the file was deleted. {output}"
+        )
+    raise GmailError(
+        f"Scanner exited {proc.returncode} for {path.name}; the file was deleted. {output}"
+    )
+
+
 def _save_attachments(msg, out_dir: Path) -> list[str]:
     out_dir = resolve_download_dir(out_dir)
     saved = []
@@ -1157,5 +1307,6 @@ def _save_attachments(msg, out_dir: Path) -> list[str]:
         target = write_attachment(
             out_dir, filename, part.get_payload(decode=True) or b""
         )
+        scan_attachment(target)
         saved.append(str(target))
     return saved

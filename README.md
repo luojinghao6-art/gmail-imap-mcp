@@ -27,7 +27,7 @@ Ships three front-ends over one core:
 
 ```bash
 # install the release wheel (PyPI publication is pending)
-pip install "gmail-imap-mcp[mcp] @ https://github.com/luojinghao6-art/gmail-imap-mcp/releases/download/v0.1.2/gmail_imap_mcp-0.1.2-py3-none-any.whl"
+pip install "gmail-imap-mcp[mcp] @ https://github.com/luojinghao6-art/gmail-imap-mcp/releases/download/v0.1.3/gmail_imap_mcp-0.1.3-py3-none-any.whl"
 gmail-imap config                      # paste a Google App Password (16 chars)
 ```
 
@@ -83,14 +83,14 @@ you need those, use a Gmail API server.
 ## Install
 
 ```bash
-# from the v0.1.2 release wheel (no PyPI account needed)
-pip install "gmail-imap-mcp[mcp] @ https://github.com/luojinghao6-art/gmail-imap-mcp/releases/download/v0.1.2/gmail_imap_mcp-0.1.2-py3-none-any.whl"
+# from the v0.1.3 release wheel (no PyPI account needed)
+pip install "gmail-imap-mcp[mcp] @ https://github.com/luojinghao6-art/gmail-imap-mcp/releases/download/v0.1.3/gmail_imap_mcp-0.1.3-py3-none-any.whl"
 
 # or straight from the repo
 pip install "git+https://github.com/luojinghao6-art/gmail-imap-mcp.git#egg=gmail-imap-mcp[mcp]"
 
 # CLI only, zero dependencies
-pip install "gmail-imap-mcp @ https://github.com/luojinghao6-art/gmail-imap-mcp/releases/download/v0.1.2/gmail_imap_mcp-0.1.2-py3-none-any.whl"
+pip install "gmail-imap-mcp @ https://github.com/luojinghao6-art/gmail-imap-mcp/releases/download/v0.1.3/gmail_imap_mcp-0.1.3-py3-none-any.whl"
 ```
 
 Once the package is on PyPI, the short form works too:
@@ -223,6 +223,17 @@ Add `--json` to `search` / `read` / `labels` for machine-readable output.
   `Host` headers (DNS rebinding), checks `Origin`/`Referer` on writes, requires
   `Content-Type: application/json`, and sends CSP, `X-Frame-Options: DENY`,
   `nosniff` and `no-referrer`. Do not port-forward it.
+- **Credentials are owner-only on disk.** `gmail-imap config` writes 0600 on
+  POSIX and replaces the ACL with a single grant for the current user on
+  Windows. If you would rather not keep the password in the JSON config at all,
+  point `GMAIL_APP_PASSWORD_FILE` at a keychain export or a mounted secret.
+- **This is a personal connector, not a shared service.** An App Password is
+  full-mailbox access, and any process running as your OS user can read the
+  config. One account per OS user or container; do not run it multi-tenant.
+- **Downloaded files are untrusted.** Saving an attachment safely says nothing
+  about what is inside it. Do not auto-open PDFs, archives or Office files that
+  arrived by mail; if you want a scanner in the loop, see `GMAIL_MCP_SCAN_CMD`
+  below.
 
 ### Code-level send controls
 
@@ -246,6 +257,9 @@ Attachments come *from* strangers, so inbound writes are constrained as well:
 | always on | `gmail_download_attachment` and `save_attachments_to` refuse any directory outside those roots |
 | always on | Sender-supplied filenames are reduced to one path component: separators replaced, `.`/`..` impossible, Windows device names prefixed, length clipped |
 | always on | An existing file is never overwritten — a `_1`, `_2` … suffix is added instead |
+| `GMAIL_MCP_SCAN_CMD="clamdscan --no-summary {}"` | Run this command on every saved attachment. Exit 0 keeps the file; any other exit, or a scanner that cannot run, deletes it and fails the call |
+| `GMAIL_MCP_AUDIT_STRICT=1` | A failed audit write aborts the send instead of warning once on stderr |
+| `GMAIL_APP_PASSWORD_FILE=/run/secrets/gmail` | Read the App Password from a file instead of the JSON config |
 
 ## Troubleshooting
 
@@ -257,9 +271,19 @@ Attachments come *from* strangers, so inbound writes are constrained as well:
 | Search returns nothing that exists | Default scope is All Mail; try `in:anywhere`, or pass `mailbox="INBOX"` |
 | Chinese folder names look like `&XfJSIJZkkK5O9g-` | Fixed — decoded automatically since 0.1.0 |
 
+### Continuous live checks
+
+`.github/workflows/live.yml` runs `tests/test_live.py` nightly against a real
+mailbox. Add `GMAIL_ADDRESS` and `GMAIL_APP_PASSWORD` as repository secrets and
+it runs; without them the step skips, so forks and pull requests never touch a
+mailbox. On a public repo, use a dedicated account — anyone who can push to the
+default branch can read Actions secrets.
+
 ## Status
 
-v0.1.2 confines inbound attachment writes to a download allowlist with
+v0.1.3 adds owner-only credentials and audit files, `GMAIL_APP_PASSWORD_FILE`,
+`GMAIL_MCP_AUDIT_STRICT`, an optional `GMAIL_MCP_SCAN_CMD` scan hook that fails
+closed, and a nightly live workflow. v0.1.2 confined inbound attachment writes to a download allowlist with
 collision-safe filenames, fixes the Skill install line (the package is
 `gmail-imap-mcp`), adds security headers to attachment downloads, redacts the
 UI token from logs, and ships an opt-in live test suite.

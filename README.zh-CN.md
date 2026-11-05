@@ -26,7 +26,7 @@
 
 ```bash
 # 先装 release 里的 wheel（PyPI 还没发）
-pip install "gmail-imap-mcp[mcp] @ https://github.com/luojinghao6-art/gmail-imap-mcp/releases/download/v0.1.2/gmail_imap_mcp-0.1.2-py3-none-any.whl"
+pip install "gmail-imap-mcp[mcp] @ https://github.com/luojinghao6-art/gmail-imap-mcp/releases/download/v0.1.3/gmail_imap_mcp-0.1.3-py3-none-any.whl"
 gmail-imap config                      # 粘贴 16 位应用专用密码
 ```
 
@@ -78,14 +78,14 @@ IMAP/SMTP 的标准认证方式。
 ## 安装
 
 ```bash
-# 从 v0.1.2 release 的 wheel 安装（不用 PyPI 账号）
-pip install "gmail-imap-mcp[mcp] @ https://github.com/luojinghao6-art/gmail-imap-mcp/releases/download/v0.1.2/gmail_imap_mcp-0.1.2-py3-none-any.whl"
+# 从 v0.1.3 release 的 wheel 安装（不用 PyPI 账号）
+pip install "gmail-imap-mcp[mcp] @ https://github.com/luojinghao6-art/gmail-imap-mcp/releases/download/v0.1.3/gmail_imap_mcp-0.1.3-py3-none-any.whl"
 
 # 或者直接从仓库装
 pip install "git+https://github.com/luojinghao6-art/gmail-imap-mcp.git#egg=gmail-imap-mcp[mcp]"
 
 # 只要 CLI，零依赖
-pip install "gmail-imap-mcp @ https://github.com/luojinghao6-art/gmail-imap-mcp/releases/download/v0.1.2/gmail_imap_mcp-0.1.2-py3-none-any.whl"
+pip install "gmail-imap-mcp @ https://github.com/luojinghao6-art/gmail-imap-mcp/releases/download/v0.1.3/gmail_imap_mcp-0.1.3-py3-none-any.whl"
 ```
 
 等发到 PyPI 之后，短写法也能用：`pip install "gmail-imap-mcp[mcp]"`。
@@ -209,6 +209,14 @@ gmail-imap labels
 - **Web UI 只监听本机**，有 token 校验，还拒绝非本机 `Host`（防 DNS rebinding）、
   写操作校验 `Origin`/`Referer`、要求 `Content-Type: application/json`，并下发
   CSP、`X-Frame-Options: DENY`、`nosniff`、`no-referrer`。别往公网转发。
+- **凭据只有你自己能读。** `gmail-imap config` 在 POSIX 上写 0600，在 Windows 上把
+  ACL 换成只给当前用户的一条授权。连 JSON 配置文件都不想放密码的话，把
+  `GMAIL_APP_PASSWORD_FILE` 指到 keychain 导出或挂载的 secret。
+- **这是个人连接器，不是共享服务。** 应用专用密码等于整个邮箱，而且以你系统账号
+  运行的程序都能读到配置。一个系统用户/容器配一个账号，别做多租户。
+- **下载下来的文件是不可信的。** 安全落盘只说明路径安全，不说明内容干净。
+  邮件来的 PDF、压缩包、Office 文件不要自动打开；要接杀毒就设
+  `GMAIL_MCP_SCAN_CMD`，见下。
 
 ### 代码层面的发信约束
 
@@ -231,6 +239,9 @@ gmail-imap labels
 | 始终生效 | `gmail_download_attachment`、`save_attachments_to` 拒绝这些根之外的任何目录 |
 | 始终生效 | 发件人给的文件名被压成单个路径片段：分隔符替换、`.`/`..` 不可能存在、Windows 设备名加前缀、超长截断 |
 | 始终生效 | 已存在的文件绝不覆盖，自动加 `_1`、`_2` 后缀 |
+| `GMAIL_MCP_SCAN_CMD="clamdscan --no-summary {}"` | 每个落盘的附件都过一遍这个命令：退出码 0 保留文件，其他退出码或者扫描器跑不起来，就删文件并让这次调用失败 |
+| `GMAIL_MCP_AUDIT_STRICT=1` | 审计日志写不进去时直接中止发信，而不是只在 stderr 警告一次 |
+| `GMAIL_APP_PASSWORD_FILE=/run/secrets/gmail` | 从文件读应用专用密码，不写进 JSON 配置 |
 
 ## 排障
 
@@ -242,9 +253,17 @@ gmail-imap labels
 | 明明有邮件却搜不到 | 默认搜的是「所有邮件」，试试 `in:anywhere`，或者传 `mailbox="INBOX"` |
 | 中文文件夹显示成 `&XfJSIJZkkK5O9g-` | 已修——0.1.0 起自动解码 |
 
+### 持续真号检查
+
+`.github/workflows/live.yml` 每晚跑一次 `tests/test_live.py`。在仓库 secrets 里加上
+`GMAIL_ADDRESS` 和 `GMAIL_APP_PASSWORD` 就会执行；没配就跳过，所以 fork 和 PR
+永远碰不到邮箱。公开仓库建议用专用账号——能往默认分支推的人都能读 Actions secrets。
+
 ## 现状
 
-已在真实个人 Gmail 账号上跑通：搜索、阅读、附件、发信、回复、Web UI。
+0.1.3 加了凭据与审计文件的属主专属权限、`GMAIL_APP_PASSWORD_FILE`、
+`GMAIL_MCP_AUDIT_STRICT`、默认拒绝的 `GMAIL_MCP_SCAN_CMD` 扫描钩子，以及每晚跑一次的真号
+workflow。已在真实个人 Gmail 账号上跑通：搜索、阅读、附件、发信、回复、Web UI。
 离线测试覆盖 IMAP FETCH/SEARCH 响应、邮件构造与会话头、附件存盘、UID/邮箱解析、
 发信策略与审计日志、Web 的 token/Host/Origin/CSP，以及 MCP 工具 schema。
 真实邮箱另有可选集成测试：`GMAIL_IMAP_LIVE=1 python -m unittest tests.test_live`

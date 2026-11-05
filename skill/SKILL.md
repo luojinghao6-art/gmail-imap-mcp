@@ -68,6 +68,10 @@ extra roots named in `GMAIL_MCP_DOWNLOAD_DIRS`). Existing files are never
 overwritten — a `_1` suffix is added. If a save is refused, tell the user which
 folder is allowed; do not try another path.
 
+Downloaded files are untrusted content: never open or execute them
+automatically. When `GMAIL_MCP_SCAN_CMD` is configured the file is scanned and
+deleted if flagged; a scan that cannot run also deletes it.
+
 ## Rules for the agent
 
 1. **Show the recipient, subject and body to the user before sending.** Send only
